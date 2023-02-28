@@ -1,0 +1,269 @@
+                                RFC
+
+Résumé:
+    Le but du projet UGEGreed est de réaliser un système de calcul distribué au dessus du protocole TCP.
+    L'idée est d'aider les chercheurs qui veulent tester des conjectures sur un très grand nombre de cas
+    en distribuant leurs calculs sur plusieurs machines.
+    Tous les entiers doivent être au format Big Endian.
+
+
+
+Paquets Client: 
+
+    RequeteClient:
+        - 1 byte: OPCODE = 00
+        - 1 int: taille de l'url encodé en UTF8
+        - n caractères encodé en UTF8
+        - 1 int: taille du nom de la classe encodé en UTF8
+        - n caractères encodé en UTF8
+        - 1 int: valeur de début de la plage des valeurs
+        - 1 int: valeur de fin de la plage des valeurs
+
+        Paquet envoyé par un client vers un membre du réseau pour faire une demande de tâche.
+
+
+    ReponseClient:
+        - 1 int: taille de la réponse encodé en UTF8
+        - n caractères encodé en UTF8
+
+        Paquet envoyé par un serveur à un client contenant une réponse à sa conjecture
+
+
+
+Paquets Serveur:
+
+    Connexion:
+        - 1 byte: OPCODE = 01
+        - 1 long: taille des données d'authentification
+        - n bytes: données d'authentification
+
+        Paquet envoyé par un nouveau serveur indiquant qu'il souhaite rejoindre le réseau.
+        Si l'on ne souhaite pas sécuriser le réseau, on peut mettre à 0 la taille des données d'authentification
+
+
+    Validation:
+        - 1 byte: OPCODE = 02
+        - 1 int: nombre serveur connecté au réseau
+        - n adresses: les adresses des membres du réseau
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+
+        Paquet envoyé par le serveur dans le réseau acceptant la connexion / reconnexion et lui indiquant la structure du réseau
+
+
+    NouveauServeur:
+        - 1 byte: OPCODE = 03
+        - adresse du serveur qui vient de se connecter
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+
+        Paquet envoyé par le serveur ayant accepté un serveur dans le réseau.
+        Le paquet est envoyé en broadcast vers tout le réseau pour que chaque membres du réseau connaissent le nouveau serveur
+
+
+    DemandeEtat:
+        - 1 byte: OPCODE = 04
+        - adresse du serveur demandant l'état
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+
+        Paquet envoyé par le serveur ayant reçu une demande de tâche d'un client.
+        Ce paquet est envoyé en broadcast vers tout le réseau pour que chaque membres indiquent leur état.
+        Le serveur pourra alors par la suite partager le travail de la meilleure façon
+
+
+    EtatServer:
+        - 1 byte: OPCODE = 05
+        - adresse du serveur demandant l'état
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+        - adresse du serveur indiquant son état
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+        - 1 int: nombre de tâches en cours sur le serveur
+
+        Paquet envoyé en réponse au paquet DemandeEtat pour indiquer sa charge de travail
+
+
+    Tache:
+        - 1 byte: OPCODE = 06
+        - adresse du serveur devant effectué la tâche
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+        - adresse du serveur demandant une tâche
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+        - 1 long: identifiant de la tâche
+        - paquet client:
+            - 1 int: taille de l'url encodé en UTF8
+            - n caractères encodé en UTF8
+            - 1 int: taille du nom de la classe encodé en UTF8
+            - n caractères encodé en UTF8
+            - 1 int: valeur de début de la plage des valeurs
+            - 1 int: valeur de fin de la plage des valeurs
+
+        Paquet envoyé par un serveur demandant d'effectuer une tâche à un autre serveur
+        
+
+    Refus:
+        - 1 byte: OPCODE = 07
+        - adresse du serveur ayant demandé la tâche
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+        - 1 long: identifiant de la tâche
+ 
+        Paquet envoyé par un serveur refusant une tâche demandée
+
+
+    ReponseTache:
+        - 1 byte: OPCODE = 08
+        - adresse du serveur ayant demandé la tâche
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+        - 1 long: identifiant de la tâche
+        - 1 int: taille de la réponse encodé en UTF8
+        - n caractères encodé en UTF8
+
+        Paquet envoyé par un serveur effectuant une tâche contenant une réponse sur un nombre testé
+
+
+    AnnulationTache:
+        - 1 byte: OPCODE = 09
+        - adresse du serveur ayant demandé la tâche
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+        - 1 long: identifiant de la tâche
+        - 1 int: début des valeurs qu'il reste à traiter
+
+        Paquet envoyé par un serveur souhaitant quitter le réseau.
+        Le serveur envoie des paquets d'annulations pour ne plus avoir de tâche à effectuer.
+        Ce paquet indique également que le serveur n'acceptera plus aucune tâche.
+        Grâce à ce paquet, le serveur ayant demandé la tâche pourra redonner la tâche à quelqu'un d'autre
+
+
+    Reconfiguration:
+        - 1 byte: OPCODE = 10
+        - adresse du nouveau parent
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+
+        Paquet envoyé par un serveur souhaitant quitter le réseau.
+        Il indique à ses fils l'adresse de son père pour que ses fils puissent s'y connecter eux mêmes.
+        Une taille d'adresse égale à 0 indique que le serveur devient ROOT et doit se reconnecter à personne
+
+
+    Deconnexion:
+        - 1 byte: OPCODE = 11
+
+        Paquet envoyé par un serveur souhaitant quitter le réseau.
+        Ce paquet sera envoyé en broadcast vers tous les membres du serveur pour que le réseau ne considère plus le serveur.
+        La connexion (socket) sera fermée par le serveur envoyant les paquets lorsqu'il aura fini la procédure.
+        Le serveur envoyant ce paquet n'accepte plus de connexion
+
+
+    Reconnexion:
+        - 1 byte: OPCODE = 12
+        - 1 long: taille des données d'authentification
+        - n bytes: données d'authentification
+        - 1 int: nombre serveur connecté au sous-réseau
+        - n adresses: les adresses des membres du sous-réseau
+            - 1 int: taille de l'adresse encodé en UTF8
+            - n caractères de l'adresse encodé en UTF8
+       
+        Paquet envoyé par un serveur ayant déjà fait partie du réseau et qui souhaite s'y reconnecter.
+        Si l'on ne souhaite pas sécuriser le réseau, on peut mettre à 0 la taille des données d'authentification
+
+
+
+Sécurité:
+
+    Pour éviter le grand banditisme, un serveur doit accepter un paquet serveur seulement si un paquet Connexion ou Reconnexion
+    a déjà été accepté.
+    Cela nous permet d'y ajouter une authentification des serveurs pour éviter que n'importe qui envoie n'importe quoi.
+
+
+
+Exemple:
+
+    On a un réseau déjà existant:
+
+        ROOT <=== A <=== B
+         ^
+         |
+         C
+
+    Soit un serveur D qui souhaite se connecter à A qui formera le réseau suivant:
+
+        ROOT <=== A <=== B
+         ^        ^
+         |        |
+         C        D
+
+    Pour réaliser cette connexion, il faudra:
+        - établir une connexion (socket) entre A et D
+        - envoyer un paquet Connexion à A pour indiquer qu'il souhaite rejoindre le réseau
+        - A envoie un paquet Validation à D pour valider son authentification et lui indiquer la structure du réseau
+        - A envoie un paquet NouveauServeur au reste du réseau pour indiquer le nouveau serveur à tous les membres
+
+    
+    Soit un client qui souhaite faire un test de conjecture, il devra:
+        - établir une connexion (socket) vers un membre du réseau
+        - envoyer un paquet RequeteClient pour donner les détails sur le conjecture
+        
+        - attendre les résultats:
+            - il recevra des paquets ReponseClient
+
+
+    Lorsqu'un membre du réseau reçoie un paquet RequeteClient, il devra:
+        - envoyer un paquet DemandeEtat à tout le réseau pour connaitre la disponibilité de chacun pour partager au mieux
+        - il recevra en reponse un paquet Etat de chaque membre
+        - envoyer un paquet Tache aux membres du réseau
+            ===> un membre du réseau peut refuser une tâche, il devra envoyer un paquet Refus
+        - il recevra en reponse un paquet ReponseTache
+
+
+    Lorsqu'un membre du réseau non-ROOT (ex: A) souhaite se déconnecter, il devra:
+        - envoyer un paquet AnnulationTache pour chaque tâche qu'il a accepté (en cours et en attente)
+        - envoyer un paquet Deconnexion à tout le réseau
+        - envoyer un paquet Reconfiguration à chacun de ses enfants (par exemple, pour A: B et D sont ses enfants)
+            pour leur indiquer l'adresse du nouveau parent
+
+        En déconnectant A, on obtient alors le réseau suivant:
+            D ===> ROOT <=== B
+                    ^
+                    |
+                    C
+
+
+    Lorsqu'un membre du réseau reçoie un paquet Reconfiguration, il devra:
+        - fermer la connexion avec son parent
+        - ouvrir une nouvelle connexion avec le serveur indiquer dans le paquet
+        - envoyer un paquet Reconnexion pour indiquer au serveur qu'il fait déjà partie du réseau et qu'il vient de se reconnecter
+            avec un potentiel nouveau chemin
+        - il recevra en réponse, un paquet Validation lui permettant validant son authentification et lui permettra de mettre à jour le réseau actuel    
+
+
+    Un membre ROOT peut également se deconnecter, il devra:
+        - envoyer un paquet AnnulationTache pour chaque tâche qu'il a accepté (en cours et en attente)
+        - il envoie un paquet Deconnexion à tout le réseau
+        - choisir un nouveau ROOT, il devra lui envoyer le paquet Reconfiguration suivant:
+                  ----------
+            ===>  | 11 | 0 |
+                  ----------  
+                  ^^^^^       OPCODE Reconfiguration
+                        ^^^^  Taille de l'adresse du nouveau parent ==> 0 = ROOT
+        - envoyer un paquet Reconfiguration pour à tous les autres enfants en donnant l'adresse du nouveau ROOT selectionné
+
+
+        En déconnectant ROOT:
+            Si ROOT choisi A comme nouveau root, on obtient le réseau:
+                C ===> A (ROOT) <=== B
+                         ^
+                         |
+                         D   
+
+            Si ROOT choisi C comme nouveau root, on obtient le réseau:
+                C (ROOT) <=== A <=== B
+                              ^
+                              |
+                              D   
