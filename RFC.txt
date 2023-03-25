@@ -66,8 +66,8 @@ Header:
     Elles suivent l'un des trois formats généraux suivants:
 
         LOCAL: 0 (BYTE) opcode (BYTE)
-        TRANSFERT: 1 (BYTE) opcode (BYTE) adresse_src (ID) adresse_dst (ID)
-        BROADCAST: 2 (BYTE) opcode (BYTE) adresse_src (ID)
+        TRANSFERT: 1 (BYTE) opcode (BYTE) adresse_src (SOCKETADDRESS) adresse_dst (SOCKETADDRESS)
+        BROADCAST: 2 (BYTE) opcode (BYTE) adresse_src (SOCKETADDRESS)
 
 
     Opcode est un octet signé qui indique le type du packet contenu dans le payload
@@ -77,7 +77,7 @@ Header:
         Il n'y a aucun comportement particulier pour les trames LOCAL.
 
     Trame TRANSFERT:
-        1 (BYTE) opcode (BYTE) adresse_src (ID) adresse_dst (ID) payload (BYTES) 
+        1 (BYTE) opcode (BYTE) adresse_src (SOCKETADDRESS) adresse_dst (SOCKETADDRESS) payload (BYTES) 
 
         si son adresse n'est pas adresse_dst (auquel cas, elle n'a rien à faire à part traiter la trame), 
         elle transmet la trame à l'identique à l'application voisine indiquée par sa table de routage pour l'identifiant adresse_dst
@@ -86,7 +86,7 @@ Header:
 
 
    Trame BROADCAST:
-        2 (BYTE) opcode (BYTE) adresse_src (ID) payload (BYTES)
+        2 (BYTE) opcode (BYTE) adresse_src (SOCKETADDRESS) payload (BYTES)
 
         elle transmet à l'identique la trame à toutes ses voisines à l'exception de la voisine qui est à l'origine de la trame.
 
