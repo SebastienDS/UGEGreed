@@ -4,12 +4,12 @@ import java.nio.ByteBuffer;
 
 public interface Reader<T> {
 
-    public static enum ProcessStatus { DONE, REFILL, ERROR };
+  public static enum ProcessStatus { DONE, REFILL, ERROR };
 
-    public ProcessStatus process(ByteBuffer bb);
+  public ProcessStatus process(ByteBuffer bb);
 
-    public T get();
+  public T get();
 
-    public void reset();
+  public void reset();
 
 }
