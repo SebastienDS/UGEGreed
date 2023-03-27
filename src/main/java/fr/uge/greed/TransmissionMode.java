@@ -5,8 +5,8 @@ import java.util.Objects;
 public sealed interface TransmissionMode {
   record Local() implements TransmissionMode {}
 
-  record Transfert(SocketAddress source, SocketAddress destination) implements TransmissionMode {
-    public Transfert {
+  record Transfer(SocketAddress source, SocketAddress destination) implements TransmissionMode {
+    public Transfer {
       Objects.requireNonNull(source);
       Objects.requireNonNull(destination);
     }
