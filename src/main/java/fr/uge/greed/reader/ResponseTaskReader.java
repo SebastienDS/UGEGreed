@@ -1,6 +1,6 @@
 package fr.uge.greed.reader;
 
-import fr.uge.greed.ResponseTask;
+import fr.uge.greed.packet.ResponseTask;
 
 import java.nio.ByteBuffer;
 import java.util.Objects;
