@@ -10,8 +10,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class GenericReaderTest {
+  private record Empty() {}
   private record Message(String login, String content) {}
   private record CompletePacket(byte opcode, int n, String content, String hostname) {}
+
+  @Test
+  public void simple() {
+    var reader = new GenericReader<>(List.of(), parts -> new Empty());
+    var bb = ByteBuffer.allocate(0);
+    assertEquals(Reader.ProcessStatus.DONE, reader.process(bb));
+    assertEquals(new Empty(), reader.get());
+  }
 
   @Test
   public void simpleMessage() {

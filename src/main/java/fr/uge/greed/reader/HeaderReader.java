@@ -88,7 +88,7 @@ public class HeaderReader implements Reader<Header> {
     switch (status) {
       case DONE -> {
         opcode = byteReader.get();
-        if (opcode > OPCODE_COUNT || opcode <= 0) {
+        if (opcode >= OPCODE_COUNT || opcode < 0) {
           state = State.ERROR;
           return;
         }

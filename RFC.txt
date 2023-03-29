@@ -95,7 +95,7 @@ Header:
 
 Connexion:
     type de transfert = LOCAL
-    OPCODE = 01
+    OPCODE = 00
     - LONG: taille des données d'authentification
     - n BYTES: données d'authentification
 
@@ -105,7 +105,7 @@ Connexion:
 
 Validation:
     type de transfert = LOCAL
-    OPCODE = 02
+    OPCODE = 01
     - LIST_SOCKETADDRESS: les adresses des membres du réseau
 
     Paquet envoyé par le serveur dans le réseau acceptant la connexion / reconnexion et lui indiquant la structure du réseau.
@@ -116,14 +116,14 @@ Validation:
 
 RefusConnexion:
     type de transfert = LOCAL
-    OPCODE = 03
+    OPCODE = 02
 
     Paqué envoyé en cas de refus de connexion au réseau
 
 
 NouveauServeur:
     type de transfert = BROADCAST
-    OPCODE = 04
+    OPCODE = 03
     - SOCKETADDRESS: adresse du serveur qui vient de se connecter
       
 
@@ -133,7 +133,7 @@ NouveauServeur:
 
 DemandeEtat:
     type de transfert = BROADCAST
-    OPCODE = 05
+    OPCODE = 04
     - SOCKETADDRESS: adresse du serveur demandant l'état
 
     Paquet envoyé par le serveur ayant reçu une demande de tâche d'un client.
@@ -143,7 +143,7 @@ DemandeEtat:
 
 EtatServer:
     type de transfert = TRANSFERT
-    OPCODE = 06
+    OPCODE = 05
     - INT: nombre de tâches en cours sur le serveur
 
     Paquet envoyé en réponse au paquet DemandeEtat pour indiquer sa charge de travail
@@ -151,7 +151,7 @@ EtatServer:
 
 Tache:
     type de transfert = TRANSFERT
-    OPCODE = 07
+    OPCODE = 06
     - LONG: identifiant de la tâche
     - STRING: url encodé en UTF8
     - STRING: nom de la classe encodé en UTF8
@@ -163,7 +163,7 @@ Tache:
 
 RefusTache:
     type de transfert = TRANSFERT
-    OPCODE = 08
+    OPCODE = 07
     - LONG: identifiant de la tâche
 
     Paquet envoyé par un serveur refusant une tâche demandée
@@ -171,7 +171,7 @@ RefusTache:
 
 ReponseTache:
     type de transfert = TRANSFERT
-    OPCODE = 09
+    OPCODE = 08
     - LONG: identifiant de la tâche
     - BYTE: status de la tâche
     - (OPTIONNEL) STRING: réponse encodé en UTF8
@@ -187,7 +187,7 @@ ReponseTache:
 
 AnnulationTache:
     type de transfert = TRANSFERT
-    OPCODE = 10
+    OPCODE = 09
     - LONG: identifiant de la tâche
     - LONG: début des valeurs qu'il reste à traiter
 
@@ -199,7 +199,7 @@ AnnulationTache:
 
 Deconnexion:
     type de transfert = BROADCAST
-    OPCODE = 11
+    OPCODE = 10
     - SOCKETADDRESS: adresse du serveur qui se déconnecte
 
     Paquet envoyé par un serveur souhaitant quitter le réseau.
@@ -212,7 +212,7 @@ Deconnexion:
 
 Reconnexion:
     type de transfert = LOCAL
-    OPCODE = 12
+    OPCODE = 11
     - LONG: taille des données d'authentification
     - n BYTES: données d'authentification
     - LIST_SOCKETADDRESS: les adresses des serveurs connectés au sous-réseau

@@ -179,7 +179,7 @@ public class HeaderReaderTest {
   public void errorOpcode() {
     var reader = new HeaderReader();
     var bb = ByteBuffer.allocate(1024);
-    bb.put((byte) 0).put((byte)0);
+    bb.put((byte) -1).put((byte)0);
     assertEquals(Reader.ProcessStatus.ERROR, reader.process(bb));
   }
 
@@ -187,7 +187,7 @@ public class HeaderReaderTest {
   public void errorOpcode2() {
     var reader = new HeaderReader();
     var bb = ByteBuffer.allocate(1024);
-    bb.put((byte) 0).put((byte)13);
+    bb.put((byte) 12).put((byte)13);
     assertEquals(Reader.ProcessStatus.ERROR, reader.process(bb));
   }
 }

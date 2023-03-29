@@ -1,6 +1,6 @@
 package fr.uge.greed.reader;
 
-import fr.uge.greed.ResponseTask;
+import fr.uge.greed.packet.ResponseTask;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
