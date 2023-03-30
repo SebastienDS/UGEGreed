@@ -2,6 +2,8 @@ package fr.uge.greed.packet;
 
 import fr.uge.greed.Payload;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 public record Task(long id, String url, String className, Range range) implements Payload {
@@ -17,5 +19,24 @@ public record Task(long id, String url, String className, Range range) implement
     Objects.requireNonNull(url);
     Objects.requireNonNull(className);
     Objects.requireNonNull(range);
+  }
+
+  @Override
+  public int getRequiredBytes() {
+    return 3 * Long.BYTES + 2 * Integer.BYTES + 2048;
+  }
+
+  @Override
+  public void encode(ByteBuffer buffer) {
+    Objects.requireNonNull(buffer);
+    var encodedUrl = StandardCharsets.UTF_8.encode(url);
+    var encodedClassName = StandardCharsets.UTF_8.encode(className);
+    buffer.putLong(id)
+        .putInt(encodedUrl.remaining())
+        .put(encodedUrl)
+        .putInt(encodedClassName.remaining())
+        .put(encodedClassName)
+        .putLong(range.from())
+        .putLong(range.to());
   }
 }

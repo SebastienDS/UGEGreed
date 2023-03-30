@@ -7,7 +7,7 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.StringJoiner;
 
-class Helpers {
+public class Helpers {
 	/***
 	 * Theses methods are here to help understanding the behavior of the selector
 	 ***/
@@ -27,7 +27,7 @@ class Helpers {
 		return joiner.toString();
 	}
 
-	static void printKeys(Selector selector) {
+	public static void printKeys(Selector selector) {
 		var selectionKeySet = selector.keys();
 		if (selectionKeySet.isEmpty()) {
 			System.out.println("The selector contains no key : this should not happen!");
@@ -53,7 +53,7 @@ class Helpers {
 		}
 	}
 
-	static void printSelectedKey(SelectionKey key) {
+	public static void printSelectedKey(SelectionKey key) {
 		var channel = key.channel();
 		if (channel instanceof ServerSocketChannel) {
 			System.out.println("\tServerSocketChannel can perform : " + possibleActionsToString(key));
