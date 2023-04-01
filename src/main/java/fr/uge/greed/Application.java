@@ -5,15 +5,15 @@ import fr.uge.greed.util.Helpers;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.util.ArrayDeque;
+import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class Application {
-  private class Context {
+public final class Application {
+  private final class Context {
     private final SelectionKey key;
     private final SocketChannel sc;
     private final PacketReader reader = new PacketReader();
@@ -41,7 +41,8 @@ public class Application {
           case REFILL:
             return;
           case DONE:
-            // TODO
+            var packet = reader.get();
+            System.out.println(packet);
             reader.reset();
             break;
         }
@@ -147,23 +148,54 @@ public class Application {
       updateInterestOps();
     }
 
+    public void doConnect() throws IOException {
+      if (!sc.finishConnect()) {
+        return;
+      }
+      key.interestOps(SelectionKey.OP_READ);
+      System.out.println("Connected");
+    }
   }
 
   private static final int BUFFER_SIZE = 1_024;
   private static final Logger logger = Logger.getLogger(Application.class.getName());
 
   private final ServerSocketChannel serverSocketChannel;
+  private final SocketAddress serverAddress;
+  private final SocketChannel parentSocketChannel;
+  private final SocketAddress parentAddress;
   private final Selector selector;
 
   public Application(int port) throws IOException {
+    serverAddress = new SocketAddress(port);
     serverSocketChannel = ServerSocketChannel.open();
-    serverSocketChannel.bind(new InetSocketAddress(port));
+    serverSocketChannel.bind(serverAddress.address());
+    parentSocketChannel = null;
+    parentAddress = null;
+    selector = Selector.open();
+  }
+
+  public Application(int port, SocketAddress parent) throws IOException {
+    Objects.requireNonNull(parent);
+    serverAddress = new SocketAddress(port);
+    parentAddress = parent;
+    serverSocketChannel = ServerSocketChannel.open();
+    serverSocketChannel.bind(serverAddress.address());
+    parentSocketChannel = SocketChannel.open();
     selector = Selector.open();
   }
 
   public void launch() throws IOException {
     serverSocketChannel.configureBlocking(false);
     serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
+
+    if (parentSocketChannel != null) {
+      parentSocketChannel.configureBlocking(false);
+      var key = parentSocketChannel.register(selector, SelectionKey.OP_CONNECT);
+      key.attach(new Context(key));
+      parentSocketChannel.connect(parentAddress.address());
+    }
+
     while (!Thread.interrupted()) {
       Helpers.printKeys(selector); // for debug
       System.out.println("Starting select");
@@ -187,6 +219,9 @@ public class Application {
       throw new UncheckedIOException(ioe);
     }
     try {
+      if (key.isValid() && key.isConnectable()) {
+        ((Context) key.attachment()).doConnect();
+      }
       if (key.isValid() && key.isWritable()) {
         ((Context) key.attachment()).doWrite();
       }
@@ -218,16 +253,21 @@ public class Application {
     }
   }
 
-
   public static void main(String[] args) throws NumberFormatException, IOException {
-    if (args.length != 1) {
+    if (args.length == 1) {
+      new Application(Integer.parseInt(args[0])).launch();
+    } else if (args.length == 3) {
+      new Application(Integer.parseInt(args[0]), new SocketAddress(args[1], Integer.parseInt(args[2]))).launch();
+    } else {
       usage();
-      return;
     }
-    new Application(Integer.parseInt(args[0])).launch();
   }
 
   private static void usage() {
-    System.out.println("Usage : Application port");
+    System.out.println("""
+      Usage :
+        - Application port
+        - Application port hostname_parent port_parent
+      """);
   }
 }
