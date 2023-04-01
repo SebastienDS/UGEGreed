@@ -4,7 +4,7 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.StringJoiner;
 
-public class IPAddressReader implements Reader<String> {
+public class IPAddressReader implements Reader<byte[]> {
   private static final int BUFFER_SIZE = Byte.BYTES + 16 * Byte.BYTES;
 
   private enum State {
@@ -14,7 +14,7 @@ public class IPAddressReader implements Reader<String> {
   private State state = State.WAITING_FORMAT;
   private final ByteBuffer internalBuffer = ByteBuffer.allocate(BUFFER_SIZE); // write-mode
   private final ByteReader byteReader = new ByteReader();
-  private String value;
+  private byte[] value;
 
   @Override
   public ProcessStatus process(ByteBuffer buffer) {
@@ -51,20 +51,10 @@ public class IPAddressReader implements Reader<String> {
     state = State.DONE;
     internalBuffer.flip();
 
-    StringJoiner stringJoiner;
-    if (internalBuffer.limit() == 4) {
-      stringJoiner = new StringJoiner(".");
-      for (var i = 0; i < 4; i++) {
-        stringJoiner.add("" + (internalBuffer.get() & 0xff));
-      }
-    } else {
-      stringJoiner = new StringJoiner(":");
-      for (var i = 0; i < 16; i += 2) {
-        stringJoiner.add(String.format("%X%X", internalBuffer.get(), internalBuffer.get()));
-      }
+    value = new byte[internalBuffer.limit()];
+    for (var i = 0; i < value.length; i++) {
+      value[i] = internalBuffer.get();
     }
-    value = stringJoiner.toString();
-
     return ProcessStatus.DONE;
   }
 
@@ -89,7 +79,7 @@ public class IPAddressReader implements Reader<String> {
   }
 
   @Override
-  public String get() {
+  public byte[] get() {
     if (state != State.DONE) {
       throw new IllegalStateException();
     }

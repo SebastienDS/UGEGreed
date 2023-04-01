@@ -1,5 +1,6 @@
 package fr.uge.greed.reader;
 
+import fr.uge.greed.SocketAddress;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
@@ -12,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class GenericReaderTest {
   private record Empty() {}
   private record Message(String login, String content) {}
-  private record CompletePacket(byte opcode, int n, String content, String hostname) {}
+  private record CompletePacket(byte opcode, int n, String content, SocketAddress address) {}
 
   @Test
   public void simple() {
@@ -49,11 +50,11 @@ public class GenericReaderTest {
   @Test
   public void completePacket() {
     var reader = new GenericReader<>(
-        List.of(new ByteReader(), new IntReader(), new StringReader(), new IPAddressReader()),
-        parts -> new CompletePacket((byte) parts.get(0), (int) parts.get(1), (String) parts.get(2), (String) parts.get(3))
+        List.of(new ByteReader(), new IntReader(), new StringReader(), new SocketAddressReader()),
+        parts -> new CompletePacket((byte) parts.get(0), (int) parts.get(1), (String) parts.get(2), (SocketAddress) parts.get(3))
     );
 
-    var packet = new CompletePacket((byte)1, 10, "content", "127.0.0.1");
+    var packet = new CompletePacket((byte)1, 10, "content", new SocketAddress("127.0.0.1", 7777));
 
     var bb = ByteBuffer.allocate(1024);
     var encodedContent = StandardCharsets.UTF_8.encode(packet.content);
@@ -66,7 +67,8 @@ public class GenericReaderTest {
         .put((byte) 127)
         .put((byte) 0)
         .put((byte) 0)
-        .put((byte) 1);
+        .put((byte) 1)
+        .putInt(7777);
 
     assertEquals(Reader.ProcessStatus.DONE, reader.process(bb));
     assertEquals(packet, reader.get());

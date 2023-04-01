@@ -2,6 +2,7 @@ package fr.uge.greed.reader;
 
 import fr.uge.greed.SocketAddress;
 
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
@@ -13,7 +14,7 @@ public class SocketAddressReader implements Reader<SocketAddress> {
   private State state = State.WAITING_ADDRESS_IP;
   private final IntReader intReader = new IntReader();
   private final IPAddressReader ipAddressReader = new IPAddressReader();
-  private String addressIP;
+  private byte[] addressIP;
   private int port;
 
   @Override
@@ -77,7 +78,11 @@ public class SocketAddressReader implements Reader<SocketAddress> {
     if (state != State.DONE) {
       throw new IllegalStateException();
     }
-    return new SocketAddress(addressIP, port);
+    try {
+      return new SocketAddress(addressIP, port);
+    } catch (UnknownHostException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   @Override

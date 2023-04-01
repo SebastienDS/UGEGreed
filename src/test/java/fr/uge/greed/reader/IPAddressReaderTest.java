@@ -3,16 +3,14 @@ package fr.uge.greed.reader;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class IPAddressReaderTest {
 
   @Test
   public void simpleIPv4() {
-    var address = "127.0.0.1";
+    var address = new byte[] {127, 0, 0, 1};
     var bb = ByteBuffer.allocate(1024);
     bb.put((byte) 4)
         .put((byte) 127)
@@ -22,44 +20,32 @@ public class IPAddressReaderTest {
 
     var reader = new IPAddressReader();
     assertEquals(Reader.ProcessStatus.DONE, reader.process(bb));
-    assertEquals(address, reader.get());
+    assertArrayEquals(address, reader.get());
     assertEquals(0, bb.position());
     assertEquals(bb.capacity(), bb.limit());
   }
 
   @Test
   public void simpleIPv6() {
-    var address = "FDEC:BA98:7654:3210:ADFC:BDFF:2990:FFFF";
+    var address = new byte[] {(byte) 0xFD, (byte) 0xEC, (byte) 0xBA, (byte) 0x98, (byte) 0x76, (byte) 0x54, (byte) 0x32,
+        (byte) 0x10, (byte) 0xAD, (byte) 0xFC, (byte) 0xBD, (byte) 0xFF, (byte) 0x29, (byte) 0x90, (byte) 0xFF, (byte) 0xFF};
     var bb = ByteBuffer.allocate(1024);
-    bb.put((byte) 6)
-        .put((byte) 0xFD)
-        .put((byte) 0xEC)
-        .put((byte) 0xBA)
-        .put((byte) 0x98)
-        .put((byte) 0x76)
-        .put((byte) 0x54)
-        .put((byte) 0x32)
-        .put((byte) 0x10)
-        .put((byte) 0xAD)
-        .put((byte) 0xFC)
-        .put((byte) 0xBD)
-        .put((byte) 0xFF)
-        .put((byte) 0x29)
-        .put((byte) 0x90)
-        .put((byte) 0xFF)
-        .put((byte) 0xFF);
+    bb.put((byte) 6);
+    for (var value : address) {
+      bb.put(value);
+    }
 
     var reader = new IPAddressReader();
     assertEquals(Reader.ProcessStatus.DONE, reader.process(bb));
-    assertEquals(address, reader.get());
+    assertArrayEquals(address, reader.get());
     assertEquals(0, bb.position());
     assertEquals(bb.capacity(), bb.limit());
   }
 
   @Test
   public void resetIPv4() {
-    var address = "127.0.0.1";
-    var address2 = "192.168.0.1";
+    var address = new byte[] {127, 0, 0, 1};
+    var address2 = new byte[] {(byte) 192, (byte) 168, 0, 1};
     var bb = ByteBuffer.allocate(1024);
     bb.put((byte) 4)
         .put((byte) 127)
@@ -75,20 +61,20 @@ public class IPAddressReaderTest {
 
     var reader = new IPAddressReader();
     assertEquals(Reader.ProcessStatus.DONE, reader.process(bb));
-    assertEquals(address, reader.get());
+    assertArrayEquals(address, reader.get());
     assertEquals(Byte.BYTES * 5, bb.position());
     assertEquals(bb.capacity(), bb.limit());
 
     reader.reset();
     assertEquals(Reader.ProcessStatus.DONE, reader.process(bb));
-    assertEquals(address2, reader.get());
+    assertArrayEquals(address2, reader.get());
     assertEquals(0, bb.position());
     assertEquals(bb.capacity(), bb.limit());
   }
 
   @Test
   public void smallBuffer() {
-    var address = "127.0.0.1";
+    var address = new byte[] {127, 0, 0, 1};
     var bb = ByteBuffer.allocate(1024);
     bb.put((byte) 4)
         .put((byte) 127)
@@ -107,7 +93,7 @@ public class IPAddressReaderTest {
         assertEquals(Reader.ProcessStatus.DONE, reader.process(bbSmall));
       }
     }
-    assertEquals(address, reader.get());
+    assertArrayEquals(address, reader.get());
   }
 
   @Test
