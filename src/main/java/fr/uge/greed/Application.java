@@ -9,6 +9,8 @@ import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.util.ArrayDeque;
 import java.util.Objects;
+import java.util.Scanner;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -157,6 +159,11 @@ public final class Application {
     }
   }
 
+  private sealed interface Command {
+    record Start(String urlJar, String fullyQualifiedName, long startRange, long endRange, String filename) implements Command {}
+    record Disconnect() implements Command {}
+  }
+
   private static final int BUFFER_SIZE = 1_024;
   private static final Logger logger = Logger.getLogger(Application.class.getName());
 
@@ -165,6 +172,7 @@ public final class Application {
   private final SocketChannel parentSocketChannel;
   private final SocketAddress parentAddress;
   private final Selector selector;
+  private final ArrayBlockingQueue<Command> queue = new ArrayBlockingQueue<>(10);
 
   public Application(int port) throws IOException {
     serverAddress = new SocketAddress(port);
@@ -185,6 +193,53 @@ public final class Application {
     selector = Selector.open();
   }
 
+  private void consoleRun() {
+    try (var scanner = new Scanner(System.in)) {
+      while (scanner.hasNextLine()) {
+        var line = scanner.nextLine();
+        var parts = line.split(" ");
+        switch (parts[0]) {
+          case "START" -> {
+            if (parts.length != 6) {
+              System.out.println("Invalid command");
+              continue;
+            }
+            sendCommand(new Command.Start(parts[1], parts[2], Long.parseLong(parts[3]), Long.parseLong(parts[4]), parts[5]));
+          }
+          case "DISCONNECT" -> sendCommand(new Command.Disconnect());
+          default -> System.out.println("Invalid command");
+        }
+      }
+    } catch (InterruptedException e) {
+      logger.info("Console thread has been interrupted");
+    } finally {
+      logger.info("Console thread stopping");
+    }
+  }
+
+  private void sendCommand(Command command) throws InterruptedException {
+    synchronized (queue) {
+      queue.put(command);
+      selector.wakeup();
+    }
+  }
+
+  private void processCommands() {
+    for (;;) {
+      synchronized (queue) {
+        var command = queue.poll();
+        if (command == null) {
+          return;
+        }
+
+        switch (command) {
+          case Command.Start cmd -> System.out.println("Command Start " + cmd);
+          case Command.Disconnect cmd -> System.out.println("Command Disconnect " + cmd);
+        }
+      }
+    }
+  }
+
   public void launch() throws IOException {
     serverSocketChannel.configureBlocking(false);
     serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
@@ -196,11 +251,14 @@ public final class Application {
       parentSocketChannel.connect(parentAddress.address());
     }
 
+    var console = Thread.ofPlatform().daemon().start(this::consoleRun);
+
     while (!Thread.interrupted()) {
       Helpers.printKeys(selector); // for debug
       System.out.println("Starting select");
       try {
         selector.select(this::treatKey);
+        processCommands();
       } catch (UncheckedIOException tunneled) {
         throw tunneled.getCause();
       }
