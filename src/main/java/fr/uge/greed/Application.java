@@ -199,6 +199,7 @@ public final class Application {
   }
 
   private sealed interface Command {
+    record Info() implements Command {}
     record Start(String urlJar, String fullyQualifiedName, long startRange, long endRange, String filename) implements Command {}
     record Disconnect() implements Command {}
   }
@@ -238,7 +239,8 @@ public final class Application {
       while (scanner.hasNextLine()) {
         var line = scanner.nextLine();
         var parts = line.split(" ");
-        switch (parts[0]) {
+        switch (parts[0].toUpperCase()) {
+          case "INFO" -> sendCommand(new Command.Info());
           case "START" -> {
             if (parts.length != 6) {
               System.out.println("Invalid command");
@@ -273,6 +275,13 @@ public final class Application {
         }
 
         switch (command) {
+          case Command.Info ignored -> {
+            var content = servers.keySet()
+                .stream()
+                .map(address -> "\t- " + address)
+                .collect(Collectors.joining("\n"));
+            System.out.println("Info :\n" + content);
+          }
           case Command.Start cmd -> System.out.println("Command Start " + cmd);
           case Command.Disconnect cmd -> System.out.println("Command Disconnect " + cmd);
         }
