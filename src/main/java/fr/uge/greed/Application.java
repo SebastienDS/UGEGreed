@@ -4,11 +4,9 @@ import fr.uge.greed.packet.Connection;
 import fr.uge.greed.packet.NewServer;
 import fr.uge.greed.packet.Validation;
 import fr.uge.greed.reader.PacketReader;
-import fr.uge.greed.util.Helpers;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.util.ArrayDeque;
@@ -18,6 +16,7 @@ import java.util.Scanner;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 public final class Application {
   private final class Context {
@@ -28,11 +27,17 @@ public final class Application {
     private final ByteBuffer bufferOut = ByteBuffer.allocate(BUFFER_SIZE);
     private final ArrayDeque<ByteBuffer> queue = new ArrayDeque<>();
     private boolean closed = false;
+    private SocketAddress address;
 
 
-    private Context(SelectionKey key) {
+    private Context(SelectionKey key, SocketAddress address) {
       this.key = key;
       this.sc = (SocketChannel) key.channel();
+      this.address = address;
+    }
+
+    private Context(SelectionKey key) {
+      this(key, null);
     }
 
     /**
@@ -51,7 +56,7 @@ public final class Application {
           case DONE:
             var packet = reader.get();
             processPacket(packet);
-            System.out.println(packet);
+            logger.info("Receive " + packet);
             reader.reset();
             break;
         }
@@ -61,14 +66,19 @@ public final class Application {
     private void processPacket(Packet packet) {
       switch(packet.payload()) {
         case Connection c -> {
+          address = c.address();
           queuePacket(new Packet(new Header(new TransmissionMode.Local(), (byte) 1), new Validation(servers.keySet().stream().toList())));
-          servers.put(c.address(), this);
+          broadcast(new Packet(new Header(new TransmissionMode.Broadcast(address), (byte) 3), new NewServer(address)), address);
+          servers.put(address, this);
         }
         case Validation v -> {
           v.addresses().forEach(a -> servers.put(a, this));
           servers.put(serverAddress, null);
         }
-        case NewServer ns -> System.out.println(packet);
+        case NewServer ns -> {
+          broadcast(packet, address);
+          servers.put(ns.address(), this);
+        }
 
         default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
       }
@@ -80,6 +90,7 @@ public final class Application {
      * @param packet the packet to add
      */
     public void queuePacket(Packet packet) {
+      logger.info("Send " + packet);
       var buffer = packet.toByteBuffer();
       queue.offer(buffer.flip());
       processOut();
@@ -181,6 +192,10 @@ public final class Application {
       queuePacket(new Packet(new Header(new TransmissionMode.Local(), (byte) 0), new Connection(serverAddress)));
       System.out.println("Connected");
     }
+
+    public SocketAddress address() {
+      return address;
+    }
   }
 
   private sealed interface Command {
@@ -272,7 +287,7 @@ public final class Application {
     if (parentSocketChannel != null) {
       parentSocketChannel.configureBlocking(false);
       var key = parentSocketChannel.register(selector, SelectionKey.OP_CONNECT);
-      key.attach(new Context(key));
+      key.attach(new Context(key, parentAddress));
       parentSocketChannel.connect(parentAddress.address());
     }
     else {
@@ -282,20 +297,16 @@ public final class Application {
     var console = Thread.ofPlatform().daemon().start(this::consoleRun);
 
     while (!Thread.interrupted()) {
-      Helpers.printKeys(selector); // for debug
-      System.out.println("Starting select");
       try {
         selector.select(this::treatKey);
         processCommands();
       } catch (UncheckedIOException tunneled) {
         throw tunneled.getCause();
       }
-      System.out.println("Select finished");
     }
   }
 
   private void treatKey(SelectionKey key) {
-    Helpers.printSelectedKey(key); // for debug
     try {
       if (key.isValid() && key.isAcceptable()) {
         doAccept();
@@ -337,6 +348,15 @@ public final class Application {
     } catch (IOException e) {
       // ignore exception
     }
+  }
+
+  private void broadcast(Packet packet, SocketAddress withoutMe) {
+    selector.keys()
+        .stream()
+        .filter(key -> key.channel() != serverSocketChannel)
+        .map(key -> (Context)key.attachment())
+        .filter(context -> !context.address().equals(withoutMe))
+        .forEach(context -> context.queuePacket(packet));
   }
 
   public static void main(String[] args) throws NumberFormatException, IOException {
