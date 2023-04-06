@@ -9,8 +9,8 @@ import java.util.Objects;
 public final class SocketAddress {
   private final InetSocketAddress address;
 
-  private SocketAddress(InetSocketAddress address) {
-    this.address = address;
+  public SocketAddress(InetSocketAddress address) {
+    this.address = Objects.requireNonNull(address);
   }
 
   public SocketAddress(int port) {
@@ -49,6 +49,11 @@ public final class SocketAddress {
   @Override
   public int hashCode() {
     return address.hashCode();
+  }
+
+  @Override
+  public String toString() {
+    return "SocketAddress[" + address + "]";
   }
 
   public int getRequiredBytes() {

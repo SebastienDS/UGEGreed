@@ -24,7 +24,7 @@ public class PacketReader implements Reader<Packet> {
   private Packet packet;
   @SuppressWarnings("unchecked") // Safe cast, Trust the process
   private final List<Reader<? extends Payload>> readers = List.of(
-      new GenericReader<>(List.of(), parts -> new Connection()),
+      new GenericReader<>(List.of(socketAddressReader), parts -> new Connection((SocketAddress) parts.get(0))),
       new GenericReader<>(List.of(listSocketAddressReader), parts -> new Validation((List<SocketAddress>) parts.get(0))),
       new GenericReader<>(List.of(), parts -> new RejectConnection()),
       new GenericReader<>(List.of(socketAddressReader), parts -> new NewServer((SocketAddress) parts.get(0))),

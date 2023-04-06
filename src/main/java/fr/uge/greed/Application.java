@@ -1,13 +1,18 @@
 package fr.uge.greed;
 
+import fr.uge.greed.packet.Connection;
+import fr.uge.greed.packet.NewServer;
+import fr.uge.greed.packet.Validation;
 import fr.uge.greed.reader.PacketReader;
 import fr.uge.greed.util.Helpers;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.util.ArrayDeque;
+import java.util.HashMap;
 import java.util.Objects;
 import java.util.Scanner;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -23,6 +28,7 @@ public final class Application {
     private final ByteBuffer bufferOut = ByteBuffer.allocate(BUFFER_SIZE);
     private final ArrayDeque<ByteBuffer> queue = new ArrayDeque<>();
     private boolean closed = false;
+
 
     private Context(SelectionKey key) {
       this.key = key;
@@ -44,10 +50,27 @@ public final class Application {
             return;
           case DONE:
             var packet = reader.get();
+            processPacket(packet);
             System.out.println(packet);
             reader.reset();
             break;
         }
+      }
+    }
+
+    private void processPacket(Packet packet) {
+      switch(packet.payload()) {
+        case Connection c -> {
+          queuePacket(new Packet(new Header(new TransmissionMode.Local(), (byte) 1), new Validation(servers.keySet().stream().toList())));
+          servers.put(c.address(), this);
+        }
+        case Validation v -> {
+          v.addresses().forEach(a -> servers.put(a, this));
+          servers.put(serverAddress, null);
+        }
+        case NewServer ns -> System.out.println(packet);
+
+        default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
       }
     }
 
@@ -155,6 +178,7 @@ public final class Application {
         return;
       }
       key.interestOps(SelectionKey.OP_READ);
+      queuePacket(new Packet(new Header(new TransmissionMode.Local(), (byte) 0), new Connection(serverAddress)));
       System.out.println("Connected");
     }
   }
@@ -173,6 +197,7 @@ public final class Application {
   private final SocketAddress parentAddress;
   private final Selector selector;
   private final ArrayBlockingQueue<Command> queue = new ArrayBlockingQueue<>(10);
+  private final HashMap<SocketAddress, Context> servers = new HashMap<>();
 
   public Application(int port) throws IOException {
     serverAddress = new SocketAddress(port);
@@ -249,6 +274,9 @@ public final class Application {
       var key = parentSocketChannel.register(selector, SelectionKey.OP_CONNECT);
       key.attach(new Context(key));
       parentSocketChannel.connect(parentAddress.address());
+    }
+    else {
+      servers.put(serverAddress, null);
     }
 
     var console = Thread.ofPlatform().daemon().start(this::consoleRun);

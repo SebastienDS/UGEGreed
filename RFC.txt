@@ -98,6 +98,7 @@ Connexion:
     OPCODE = 00
     - LONG: taille des données d'authentification
     - n BYTES: données d'authentification
+    - SOCKETADDRESS: l'adresse du serveur qui essaie de se connecter
 
     Paquet envoyé par un nouveau serveur indiquant qu'il souhaite rejoindre le réseau.
     Si l'on ne souhaite pas sécuriser le réseau, on peut mettre à 0 la taille des données d'authentification
