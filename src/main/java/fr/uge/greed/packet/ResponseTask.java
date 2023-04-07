@@ -8,6 +8,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 public record ResponseTask(long taskId, byte taskStatus, Optional<String> response) implements Payload {
+  public static final byte OPCODE = 8;
+
   public ResponseTask {
     if (taskStatus < 0 || taskStatus >= 4)
       throw new IllegalArgumentException("Task status may be between 0 and 3.");

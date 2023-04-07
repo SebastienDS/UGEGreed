@@ -8,6 +8,8 @@ import java.util.Objects;
 
 
 public record Disconnection(SocketAddress address) implements Payload {
+  public static final byte OPCODE = 10;
+
   public Disconnection {
     Objects.requireNonNull(address);
   }

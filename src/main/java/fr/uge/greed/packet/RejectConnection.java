@@ -6,6 +6,8 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public record RejectConnection() implements Payload {
+  public static final byte OPCODE = 2;
+
   @Override
   public int getRequiredBytes() {
     return 0;

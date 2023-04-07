@@ -6,6 +6,8 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public record ResponseState(int tasksInProgress) implements Payload {
+  public static final byte OPCODE = 5;
+
   public ResponseState {
     if (tasksInProgress < 0) {
       throw new IllegalArgumentException("TasksInProgress must be > 0");

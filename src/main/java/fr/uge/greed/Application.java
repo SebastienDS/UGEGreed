@@ -1,18 +1,13 @@
 package fr.uge.greed;
 
-import fr.uge.greed.packet.Connection;
-import fr.uge.greed.packet.NewServer;
-import fr.uge.greed.packet.Validation;
+import fr.uge.greed.packet.*;
 import fr.uge.greed.reader.PacketReader;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
-import java.util.ArrayDeque;
-import java.util.HashMap;
-import java.util.Objects;
-import java.util.Scanner;
+import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -27,13 +22,13 @@ public final class Application {
     private final ByteBuffer bufferOut = ByteBuffer.allocate(BUFFER_SIZE);
     private final ArrayDeque<ByteBuffer> queue = new ArrayDeque<>();
     private boolean closed = false;
-    private SocketAddress address;
+    private SocketAddress targetAddress;
 
 
-    private Context(SelectionKey key, SocketAddress address) {
+    private Context(SelectionKey key, SocketAddress targetAddress) {
       this.key = key;
       this.sc = (SocketChannel) key.channel();
-      this.address = address;
+      this.targetAddress = targetAddress;
     }
 
     private Context(SelectionKey key) {
@@ -66,18 +61,34 @@ public final class Application {
     private void processPacket(Packet packet) {
       switch(packet.payload()) {
         case Connection c -> {
-          address = c.address();
-          queuePacket(new Packet(new Header(new TransmissionMode.Local(), (byte) 1), new Validation(servers.keySet().stream().toList())));
-          broadcast(new Packet(new Header(new TransmissionMode.Broadcast(address), (byte) 3), new NewServer(address)), address);
-          servers.put(address, this);
+          targetAddress = c.address();
+          queuePacket(new Packet(new Header(new TransmissionMode.Local(), Validation.OPCODE), new Validation(servers.keySet().stream().toList())));
+          broadcast(new Packet(new Header(new TransmissionMode.Broadcast(targetAddress), NewServer.OPCODE), new NewServer(targetAddress)), targetAddress);
+          servers.put(targetAddress, this);
         }
         case Validation v -> {
           v.addresses().forEach(a -> servers.put(a, this));
           servers.put(serverAddress, null);
         }
         case NewServer ns -> {
-          broadcast(packet, address);
+          broadcast(packet, targetAddress);
           servers.put(ns.address(), this);
+        }
+        case RequestState r -> {
+          broadcast(packet, targetAddress);
+          var source = ((TransmissionMode.Broadcast) packet.header().mode()).source();
+          // TODO task in progress
+          var response = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, source), ResponseState.OPCODE), new ResponseState(0));
+          servers.get(source).queuePacket(response);
+        }
+        case ResponseState r -> {
+          var mode = ((TransmissionMode.Transfer) packet.header().mode());
+          if (mode.destination().equals(serverAddress)) {
+            states.put(mode.source(), r.tasksInProgress());
+            tasks.values().forEach(TaskContext::process);
+          } else {
+            servers.get(mode.destination()).queuePacket(packet);
+          }
         }
 
         default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
@@ -189,14 +200,57 @@ public final class Application {
         return;
       }
       key.interestOps(SelectionKey.OP_READ);
-      queuePacket(new Packet(new Header(new TransmissionMode.Local(), (byte) 0), new Connection(serverAddress)));
+      queuePacket(new Packet(new Header(new TransmissionMode.Local(), Connection.OPCODE), new Connection(serverAddress)));
       System.out.println("Connected");
     }
 
     public SocketAddress address() {
-      return address;
+      return targetAddress;
     }
   }
+
+  private final class TaskContext {
+    private final long taskID;
+    private final Command.Start task;
+    private final Set<SocketAddress> taskMember;
+    private boolean waitingState = true;
+
+    public TaskContext(long taskID, Command.Start task, Set<SocketAddress> taskMember) {
+      Objects.requireNonNull(task);
+      Objects.requireNonNull(taskMember);
+      this.taskID = taskID;
+      this.task = task;
+      this.taskMember = taskMember;
+    }
+
+    public void requestState() {
+      taskMember.forEach(address -> states.put(address, null)); // reset state
+      states.put(serverAddress, 0); // add my state
+      // TODO set real task in progress
+      broadcast(new Packet(new Header(new TransmissionMode.Broadcast(serverAddress), RequestState.OPCODE), new RequestState()), serverAddress);
+    }
+
+    public void process() {
+      if (!waitingState || !canStart()) {
+        return;
+      }
+      requestTask();
+    }
+
+    private boolean canStart() {
+      var received = taskMember.stream()
+          .map(states::get)
+          .filter(Objects::nonNull)
+          .count();
+      return received == taskMember.size();
+    }
+
+    private void requestTask() {
+      // TODO split task with members + me
+      // TODO send Task
+    }
+  }
+
 
   private sealed interface Command {
     record Info() implements Command {}
@@ -214,6 +268,10 @@ public final class Application {
   private final Selector selector;
   private final ArrayBlockingQueue<Command> queue = new ArrayBlockingQueue<>(10);
   private final HashMap<SocketAddress, Context> servers = new HashMap<>();
+  private long taskID = 0;
+  private final HashMap<Long, TaskContext> tasks = new HashMap<>();
+  private final HashMap<SocketAddress, Integer> states = new HashMap<>();
+
 
   public Application(int port) throws IOException {
     serverAddress = new SocketAddress(port);
@@ -280,9 +338,26 @@ public final class Application {
                 .stream()
                 .map(address -> "\t- " + address)
                 .collect(Collectors.joining("\n"));
-            System.out.println("Info :\n" + content);
+            System.out.println("Members :\n" + content);
+
+            content = states.entrySet()
+                .stream()
+                .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue())
+                .collect(Collectors.joining("\n"));
+            System.out.println("States :\n" + content);
           }
-          case Command.Start cmd -> System.out.println("Command Start " + cmd);
+          case Command.Start cmd -> {
+            System.out.println("Command Start " + cmd);
+            var members = servers.entrySet()
+                .stream()
+                .filter(entry -> entry.getValue() != null) // not me
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toSet());
+            var task = new TaskContext(taskID, cmd, members);
+            tasks.put(taskID, task);
+            taskID++;
+            task.requestState();
+          }
           case Command.Disconnect cmd -> System.out.println("Command Disconnect " + cmd);
         }
       }

@@ -4,11 +4,12 @@ import fr.uge.greed.Payload;
 import fr.uge.greed.SocketAddress;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 
 public record Validation(List<SocketAddress> addresses) implements Payload {
+  public static final byte OPCODE = 1;
+
   public Validation {
     Objects.requireNonNull(addresses);
     addresses = List.copyOf(addresses);

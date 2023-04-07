@@ -7,6 +7,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 public record Task(long id, String url, String className, Range range) implements Payload {
+  public static final byte OPCODE = 6;
+
   public record Range(long from, long to) {
     public Range {
       if (from > to) {

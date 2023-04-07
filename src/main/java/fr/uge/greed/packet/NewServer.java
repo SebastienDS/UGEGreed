@@ -7,6 +7,8 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public record NewServer(SocketAddress address) implements Payload {
+  public static final byte OPCODE = 3;
+
   public NewServer {
     Objects.requireNonNull(address);
   }

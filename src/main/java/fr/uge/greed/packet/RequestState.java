@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public record RequestState() implements Payload {
+  public static final byte OPCODE = 4;
 
   @Override
   public int getRequiredBytes() {

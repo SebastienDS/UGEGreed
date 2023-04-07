@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Objects;
 
 public record Reconnection(List<SocketAddress> addresses) implements Payload {
+  public static final byte OPCODE = 11;
+
   public Reconnection {
     Objects.requireNonNull(addresses);
     addresses = List.copyOf(addresses);

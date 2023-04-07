@@ -6,6 +6,8 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public record RejectTask(long id) implements Payload {
+  public static final byte OPCODE = 7;
+
   @Override
   public int getRequiredBytes() {
     return Long.BYTES;

@@ -7,6 +7,8 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public record Connection(SocketAddress address) implements Payload {
+  public static final byte OPCODE = 0;
+
   public Connection {
     Objects.requireNonNull(address);
   }

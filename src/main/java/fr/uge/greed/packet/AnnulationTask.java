@@ -6,6 +6,8 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 public record AnnulationTask(long id, long startRemainingValues) implements Payload {
+  public static final byte OPCODE = 9;
+
   @Override
   public int getRequiredBytes() {
     return 2 * Long.BYTES;
