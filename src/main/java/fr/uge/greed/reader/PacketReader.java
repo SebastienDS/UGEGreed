@@ -28,7 +28,7 @@ public class PacketReader implements Reader<Packet> {
       new GenericReader<>(List.of(listSocketAddressReader), parts -> new Validation((List<SocketAddress>) parts.get(0))),
       new GenericReader<>(List.of(), parts -> new RejectConnection()),
       new GenericReader<>(List.of(socketAddressReader), parts -> new NewServer((SocketAddress) parts.get(0))),
-      new GenericReader<>(List.of(socketAddressReader), parts -> new RequestState((SocketAddress) parts.get(0))),
+      new GenericReader<>(List.of(), parts -> new RequestState()),
       new GenericReader<>(List.of(intReader), parts -> new ResponseState((int) parts.get(0))),
       new GenericReader<>(
           List.of(longReader, stringReader, stringReader, longReader, longReader),

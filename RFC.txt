@@ -135,7 +135,6 @@ NouveauServeur:
 DemandeEtat:
     type de transfert = BROADCAST
     OPCODE = 04
-    - SOCKETADDRESS: adresse du serveur demandant l'état
 
     Paquet envoyé par le serveur ayant reçu une demande de tâche d'un client.
     Ce paquet est envoyé en broadcast vers tout le réseau pour que chaque membres indiquent leur état.
