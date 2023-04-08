@@ -24,20 +24,21 @@ public class PacketReader implements Reader<Packet> {
   private Packet packet;
   @SuppressWarnings("unchecked") // Safe cast, Trust the process
   private final List<Reader<? extends Payload>> readers = List.of(
-      new GenericReader<>(List.of(socketAddressReader), parts -> new Connection((SocketAddress) parts.get(0))),
-      new GenericReader<>(List.of(listSocketAddressReader), parts -> new Validation((List<SocketAddress>) parts.get(0))),
-      new GenericReader<>(List.of(), parts -> new RejectConnection()),
-      new GenericReader<>(List.of(socketAddressReader), parts -> new NewServer((SocketAddress) parts.get(0))),
-      new GenericReader<>(List.of(), parts -> new RequestState()),
-      new GenericReader<>(List.of(intReader), parts -> new ResponseState((int) parts.get(0))),
-      new GenericReader<>(
+      /* 0 */ new GenericReader<>(List.of(socketAddressReader), parts -> new Connection((SocketAddress) parts.get(0))),
+      /* 1 */ new GenericReader<>(List.of(listSocketAddressReader), parts -> new Validation((List<SocketAddress>) parts.get(0))),
+      /* 2 */ new GenericReader<>(List.of(), parts -> new RejectConnection()),
+      /* 3 */ new GenericReader<>(List.of(socketAddressReader), parts -> new NewServer((SocketAddress) parts.get(0))),
+      /* 4 */ new GenericReader<>(List.of(), parts -> new RequestState()),
+      /* 5 */ new GenericReader<>(List.of(intReader), parts -> new ResponseState((int) parts.get(0))),
+      /* 6 */ new GenericReader<>(
           List.of(longReader, stringReader, stringReader, longReader, longReader),
           parts -> new Task((long) parts.get(0), (String) parts.get(1), (String) parts.get(2), new Task.Range((long) parts.get(3), (long) parts.get(4)))
       ),
-      new ResponseTaskReader(),
-      new GenericReader<>(List.of(longReader, longReader), parts -> new AnnulationTask((long) parts.get(0), (long) parts.get(1))),
-      new GenericReader<>(List.of(socketAddressReader), parts -> new Disconnection((SocketAddress) parts.get(0))),
-      new GenericReader<>(List.of(listSocketAddressReader), parts -> new Reconnection((List<SocketAddress>) parts.get(0)))
+      /* 7 */ new GenericReader<>(List.of(longReader), parts -> new RejectTask((long) parts.get(0))),
+      /* 8 */ new ResponseTaskReader(),
+      /* 9 */ new GenericReader<>(List.of(longReader, longReader), parts -> new AnnulationTask((long) parts.get(0), (long) parts.get(1))),
+      /* 10 */ new GenericReader<>(List.of(socketAddressReader), parts -> new Disconnection((SocketAddress) parts.get(0))),
+      /* 11 */ new GenericReader<>(List.of(listSocketAddressReader), parts -> new Reconnection((List<SocketAddress>) parts.get(0)))
   );
 
   @Override
