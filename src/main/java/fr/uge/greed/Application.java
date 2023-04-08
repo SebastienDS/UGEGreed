@@ -12,6 +12,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+import java.util.stream.LongStream;
 
 public final class Application {
   private final class Context {
@@ -97,6 +98,14 @@ public final class Application {
             return;
           }
           queueTask(mode.source(), t);
+        }
+        case ResponseTask r -> {
+          var mode = ((TransmissionMode.Transfer) packet.header().mode());
+          if (!mode.destination().equals(serverAddress)) {
+            servers.get(mode.destination()).queuePacket(packet);
+            return;
+          }
+          tasks.get(r.taskId()).addResponse(mode.source(), r);
         }
 
         default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
@@ -315,6 +324,13 @@ public final class Application {
         }
       });
     }
+
+    public void addResponse(SocketAddress source, ResponseTask response) {
+      Objects.requireNonNull(source);
+      Objects.requireNonNull(response);
+      logger.info("Task response : " + source + " - " + response);
+      // TODO
+    }
   }
 
 
@@ -505,8 +521,21 @@ public final class Application {
   }
 
   private void queueTask(SocketAddress source, Task task) {
-    // TODO
     logger.info("task queued " + source + " " + task);
+
+    // TODO execute tasks
+
+    // fake response
+    LongStream.rangeClosed(task.range().from(), task.range().to())
+        .forEach(i -> {
+          var response = new ResponseTask(task.id(), (byte) 0, Optional.of("Task " + task.id() + " " + task.range() + " value=" + i));
+          if (source.equals(serverAddress)) {
+            tasks.get(task.id()).addResponse(serverAddress, response);
+          } else {
+            var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, source), ResponseTask.OPCODE), response);
+            servers.get(source).queuePacket(packet);
+          }
+        });
   }
 
   public static void main(String[] args) throws NumberFormatException, IOException {
