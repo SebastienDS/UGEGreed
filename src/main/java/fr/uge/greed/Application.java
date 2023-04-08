@@ -83,12 +83,20 @@ public final class Application {
         }
         case ResponseState r -> {
           var mode = ((TransmissionMode.Transfer) packet.header().mode());
-          if (mode.destination().equals(serverAddress)) {
-            states.put(mode.source(), r.tasksInProgress());
-            tasks.values().forEach(TaskContext::process);
-          } else {
+          if (!mode.destination().equals(serverAddress)) {
             servers.get(mode.destination()).queuePacket(packet);
+            return;
           }
+          states.put(mode.source(), r.tasksInProgress());
+          tasks.values().forEach(TaskContext::process);
+        }
+        case Task t -> {
+          var mode = ((TransmissionMode.Transfer) packet.header().mode());
+          if (!mode.destination().equals(serverAddress)) {
+            servers.get(mode.destination()).queuePacket(packet);
+            return;
+          }
+          queueTask(mode.source(), t);
         }
 
         default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
@@ -213,7 +221,8 @@ public final class Application {
     private final long taskID;
     private final Command.Start task;
     private final Set<SocketAddress> taskMember;
-    private boolean waitingState = true;
+    private boolean tasksSent;
+    private final HashMap<SocketAddress, Task> requestedTasks = new HashMap<>();
 
     public TaskContext(long taskID, Command.Start task, Set<SocketAddress> taskMember) {
       Objects.requireNonNull(task);
@@ -231,10 +240,11 @@ public final class Application {
     }
 
     public void process() {
-      if (!waitingState || !canStart()) {
+      if (tasksSent || !canStart()) {
         return;
       }
-      requestTask();
+      requestTasks();
+      tasksSent = true;
     }
 
     private boolean canStart() {
@@ -245,9 +255,65 @@ public final class Application {
       return received == taskMember.size();
     }
 
-    private void requestTask() {
-      // TODO split task with members + me
-      // TODO send Task
+    private void requestTasks() {
+      var members = states.entrySet()
+          .stream()
+          .filter(entry -> taskMember.contains(entry.getKey()))
+          .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+      var tasksCount = Math.abs(task.endRange - task.startRange);
+      var distribution = distributeTasks(tasksCount, members);
+      createTasks(distribution);
+      sendTasks();
+    }
+
+    private static Map<SocketAddress, Integer> distributeTasks(long numTasks, Map<SocketAddress, Integer> tasksInProgress) {
+      var totalTasksInProgress = tasksInProgress.values().stream().mapToInt(Integer::intValue).sum();
+      var idealTasksPerServer = (numTasks + totalTasksInProgress) / tasksInProgress.size();
+      var remainingTasks = numTasks;
+      var distribution = new HashMap<SocketAddress, Integer>();
+
+      for (var entry : tasksInProgress.entrySet()) {
+        var address = entry.getKey();
+        var tasks = entry.getValue();
+        var extraTasks = 0;
+        if (tasks < idealTasksPerServer) {
+          extraTasks = (int) Math.min(remainingTasks, idealTasksPerServer - tasks);
+          remainingTasks -= extraTasks;
+        }
+        distribution.put(address, extraTasks);
+      }
+      if (remainingTasks > 0) {
+        var address = distribution.keySet().stream().findAny().orElseThrow();
+        distribution.merge(address, (int) remainingTasks, Integer::sum);
+      }
+      return distribution;
+    }
+
+    private void createTasks(Map<SocketAddress, Integer> distribution) {
+      var taskIndex = 0L;
+      for (var entry : distribution.entrySet()) {
+        var assignedTaskCount = entry.getValue();
+        var start = task.startRange + taskIndex;
+        var end = start + assignedTaskCount;
+        // TODO fix end1 == start2
+        var newTask = new Task(taskID, task.urlJar, task.fullyQualifiedName, new Task.Range(start, end));
+        taskIndex += assignedTaskCount;
+
+        requestedTasks.put(entry.getKey(), newTask);
+      }
+      logger.info("Tasks created : " + requestedTasks);
+    }
+
+    private void sendTasks() {
+      requestedTasks.forEach((address, task) -> {
+        var context = servers.get(address);
+        if (context == null) { // no context for myself, nothing to send
+          queueTask(serverAddress, task);
+        } else {
+          var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, address), Task.OPCODE), task);
+          context.queuePacket(packet);
+        }
+      });
     }
   }
 
@@ -348,12 +414,7 @@ public final class Application {
           }
           case Command.Start cmd -> {
             System.out.println("Command Start " + cmd);
-            var members = servers.entrySet()
-                .stream()
-                .filter(entry -> entry.getValue() != null) // not me
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toSet());
-            var task = new TaskContext(taskID, cmd, members);
+            var task = new TaskContext(taskID, cmd, Set.copyOf(servers.keySet()));
             tasks.put(taskID, task);
             taskID++;
             task.requestState();
@@ -441,6 +502,11 @@ public final class Application {
         .map(key -> (Context)key.attachment())
         .filter(context -> !context.address().equals(withoutMe))
         .forEach(context -> context.queuePacket(packet));
+  }
+
+  private void queueTask(SocketAddress source, Task task) {
+    // TODO
+    logger.info("task queued " + source + " " + task);
   }
 
   public static void main(String[] args) throws NumberFormatException, IOException {
