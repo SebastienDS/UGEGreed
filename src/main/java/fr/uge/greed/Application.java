@@ -302,6 +302,9 @@ public final class Application {
       var taskIndex = 0L;
       for (var entry : distribution.entrySet()) {
         var assignedTaskCount = entry.getValue();
+        if (assignedTaskCount == 0) {
+          continue;
+        }
         var start = task.startRange + taskIndex;
         var end = start + assignedTaskCount - 1;
         var newTask = new Task(taskID, task.urlJar, task.fullyQualifiedName, new Task.Range(start, end));
