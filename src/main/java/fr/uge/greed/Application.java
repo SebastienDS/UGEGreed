@@ -269,7 +269,7 @@ public final class Application {
           .stream()
           .filter(entry -> taskMember.contains(entry.getKey()))
           .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-      var tasksCount = Math.abs(task.endRange - task.startRange);
+      var tasksCount = Math.abs(task.endRange - task.startRange) + 1;
       var distribution = distributeTasks(tasksCount, members);
       createTasks(distribution);
       sendTasks();
@@ -303,8 +303,7 @@ public final class Application {
       for (var entry : distribution.entrySet()) {
         var assignedTaskCount = entry.getValue();
         var start = task.startRange + taskIndex;
-        var end = start + assignedTaskCount;
-        // TODO fix end1 == start2
+        var end = start + assignedTaskCount - 1;
         var newTask = new Task(taskID, task.urlJar, task.fullyQualifiedName, new Task.Range(start, end));
         taskIndex += assignedTaskCount;
 
