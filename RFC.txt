@@ -204,7 +204,6 @@ AnnulationTache:
 Deconnexion:
     type de transfert = BROADCAST
     OPCODE = 10
-    - SOCKETADDRESS: adresse du serveur qui se déconnecte
 
     Paquet envoyé par un serveur souhaitant quitter le réseau.
     Le ROOT est le seul serveur ne pouvant pas se déconnecter.
