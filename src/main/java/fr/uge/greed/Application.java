@@ -9,10 +9,14 @@ import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
+
 
 public final class Application {
   private final class Context {
@@ -52,7 +56,7 @@ public final class Application {
           case DONE:
             var packet = reader.get();
             processPacket(packet);
-            logger.info("Receive " + packet);
+            // logger.info("Receive " + packet);
             reader.reset();
             break;
         }
@@ -78,8 +82,7 @@ public final class Application {
         case RequestState r -> {
           broadcast(packet, targetAddress);
           var source = ((TransmissionMode.Broadcast) packet.header().mode()).source();
-          // TODO task in progress
-          var response = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, source), ResponseState.OPCODE), new ResponseState(0));
+          var response = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, source), ResponseState.OPCODE), new ResponseState(taskInProgress.get()));
           servers.get(source).queuePacket(response);
         }
         case ResponseState r -> {
@@ -118,7 +121,7 @@ public final class Application {
      * @param packet the packet to add
      */
     public void queuePacket(Packet packet) {
-      logger.info("Send " + packet);
+      // logger.info("Send " + packet);
       var buffer = packet.toByteBuffer();
       queue.offer(buffer.flip());
       processOut();
@@ -243,8 +246,7 @@ public final class Application {
 
     public void requestState() {
       taskMember.forEach(address -> states.put(address, null)); // reset state
-      states.put(serverAddress, 0); // add my state
-      // TODO set real task in progress
+      states.put(serverAddress, taskInProgress.get()); // add my state
       broadcast(new Packet(new Header(new TransmissionMode.Broadcast(serverAddress), RequestState.OPCODE), new RequestState()), serverAddress);
     }
 
@@ -355,6 +357,9 @@ public final class Application {
   private long taskID = 0;
   private final HashMap<Long, TaskContext> tasks = new HashMap<>();
   private final HashMap<SocketAddress, Integer> states = new HashMap<>();
+  private final ExecutorService executorService = Executors.newFixedThreadPool(10);
+  private final AtomicInteger taskInProgress = new AtomicInteger();
+  private final ArrayBlockingQueue<Map.Entry<SocketAddress, ResponseTask>> responseQueue = new ArrayBlockingQueue<>(10);
 
 
   public Application(int port) throws IOException {
@@ -463,6 +468,7 @@ public final class Application {
       try {
         selector.select(this::treatKey);
         processCommands();
+        processResponses();
       } catch (UncheckedIOException tunneled) {
         throw tunneled.getCause();
       }
@@ -523,21 +529,66 @@ public final class Application {
   }
 
   private void queueTask(SocketAddress source, Task task) {
-    logger.info("task queued " + source + " " + task);
+    // logger.info("task queued " + source + " " + task);
 
-    // TODO execute tasks
+    var checkerOptional = Client.checkerFromHTTP(task.url(),task.className());
+    if (checkerOptional.isEmpty()) {
+      var response = new ResponseTask(task.id(), ResponseTask.DOWNLOAD_ERROR, Optional.empty());
+      sendResponse(source, response);
+      return;
+    }
 
-    // fake response
+    var checker = checkerOptional.orElseThrow();
+
+    taskInProgress.getAndUpdate(x -> (int) (x + Math.abs(task.range().to() - task.range().from()) + 1));
+
     LongStream.rangeClosed(task.range().from(), task.range().to())
-        .forEach(i -> {
-          var response = new ResponseTask(task.id(), (byte) 0, Optional.of("Task " + task.id() + " " + task.range() + " value=" + i));
-          if (source.equals(serverAddress)) {
-            tasks.get(task.id()).addResponse(serverAddress, response);
-          } else {
-            var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, source), ResponseTask.OPCODE), response);
-            servers.get(source).queuePacket(packet);
+        .forEach(value -> executorService.submit(() -> {
+          try {
+            String result;
+            synchronized (checker) {
+              result = checker.check(value);
+            }
+            var response = new ResponseTask(task.id(), ResponseTask.OK, Optional.of(result));
+            sendResponse(source, response);
+          } catch (InterruptedException e) {
+            var response = new ResponseTask(task.id(), ResponseTask.TIMEOUT, Optional.empty());
+            sendResponse(source, response);
+          } catch (Exception e) {
+            var response = new ResponseTask(task.id(), ResponseTask.EXCEPTION_THROWN, Optional.empty());
+            sendResponse(source, response);
           }
-        });
+
+          taskInProgress.getAndDecrement();
+        }));
+  }
+
+  private void sendResponse(SocketAddress source, ResponseTask response) {
+    synchronized (responseQueue) {
+      responseQueue.offer(Map.entry(source, response));
+      selector.wakeup();
+    }
+  }
+
+  private void processResponses() {
+    for (;;) {
+      synchronized (responseQueue) {
+        var entry = responseQueue.poll();
+        if (entry == null) {
+          return;
+        }
+
+        var source = entry.getKey();
+        var response = entry.getValue();
+
+        if (source.equals(serverAddress)) {
+          tasks.get(response.taskId()).addResponse(serverAddress, response);
+        } else {
+          var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, source), ResponseTask.OPCODE), response);
+          servers.get(source).queuePacket(packet);
+        }
+      }
+    }
   }
 
   public static void main(String[] args) throws NumberFormatException, IOException {

@@ -9,6 +9,10 @@ import java.util.Optional;
 
 public record ResponseTask(long taskId, byte taskStatus, Optional<String> response) implements Payload {
   public static final byte OPCODE = 8;
+  public static final byte OK = 0;
+  public static final byte EXCEPTION_THROWN = 1;
+  public static final byte TIMEOUT = 2;
+  public static final byte DOWNLOAD_ERROR = 3;
 
   public ResponseTask {
     if (taskStatus < 0 || taskStatus >= 4)
