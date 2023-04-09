@@ -14,6 +14,7 @@ public class PacketReader implements Reader<Packet> {
   };
 
   private State state = State.WAITING_HEADER;
+  private final ByteReader byteReader = new ByteReader();
   private final IntReader intReader = new IntReader();
   private final LongReader longReader = new LongReader();
   private final StringReader stringReader = new StringReader();
@@ -36,7 +37,7 @@ public class PacketReader implements Reader<Packet> {
       ),
       /* 7 */ new GenericReader<>(List.of(longReader), parts -> new RejectTask((long) parts.get(0))),
       /* 8 */ new ResponseTaskReader(),
-      /* 9 */ new GenericReader<>(List.of(longReader, longReader), parts -> new AnnulationTask((long) parts.get(0), (long) parts.get(1))),
+      /* 9 */ new GenericReader<>(List.of(longReader, byteReader, longReader), parts -> new AnnulationTask((long) parts.get(0), (byte) parts.get(1), (long) parts.get(2))),
       /* 10 */ new GenericReader<>(List.of(socketAddressReader), parts -> new Disconnection((SocketAddress) parts.get(0))),
       /* 11 */ new GenericReader<>(List.of(listSocketAddressReader), parts -> new Reconnection((List<SocketAddress>) parts.get(0)))
   );

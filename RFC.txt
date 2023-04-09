@@ -189,12 +189,16 @@ AnnulationTache:
     type de transfert = TRANSFERT
     OPCODE = 09
     - LONG: identifiant de la tâche
+    - BYTE: status de l'annulation
     - LONG: début des valeurs qu'il reste à traiter
 
     Paquet envoyé par un serveur souhaitant quitter le réseau.
     Le serveur envoie des paquets d'annulations pour ne plus avoir de tâche à effectuer.
     Ce paquet indique également que le serveur n'acceptera plus aucune tâche.
     Grâce à ce paquet, le serveur ayant demandé la tâche pourra redonner la tâche à quelqu'un d'autre
+    Status possible:
+        0 = on annule une tâche qu'on a crée
+        autres = on annule une tâche qui nous a été assignée
 
 
 Deconnexion:
