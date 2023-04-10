@@ -14,6 +14,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 
 public final class Application {
@@ -25,13 +26,20 @@ public final class Application {
     private final ByteBuffer bufferOut = ByteBuffer.allocate(BUFFER_SIZE);
     private final ArrayDeque<ByteBuffer> queue = new ArrayDeque<>();
     private boolean closed = false;
+    private boolean connectionClosed = false;
     private SocketAddress targetAddress;
+    private final boolean isReconnection;
 
 
-    private Context(SelectionKey key, SocketAddress targetAddress) {
+    private Context(SelectionKey key, SocketAddress targetAddress, boolean isReconnection) {
       this.key = key;
       this.sc = (SocketChannel) key.channel();
       this.targetAddress = targetAddress;
+      this.isReconnection = isReconnection;
+    }
+
+    private Context(SelectionKey key, SocketAddress targetAddress) {
+      this(key, targetAddress, false);
     }
 
     private Context(SelectionKey key) {
@@ -65,15 +73,21 @@ public final class Application {
       switch(packet.payload()) {
         case Connection c -> {
           targetAddress = c.address();
-          queuePacket(new Packet(new Header(new TransmissionMode.Local(), Validation.OPCODE), new Validation(servers.keySet().stream().toList())));
+          var network = Stream.concat(
+              Stream.of(rootAddress),
+              servers.keySet().stream().filter(address -> !address.equals(rootAddress))
+          ).toList();
+          queuePacket(new Packet(new Header(new TransmissionMode.Local(), Validation.OPCODE), new Validation(network)));
           broadcast(new Packet(new Header(new TransmissionMode.Broadcast(targetAddress), NewServer.OPCODE), new NewServer(targetAddress)), targetAddress);
           servers.put(targetAddress, this);
         }
         case Validation v -> {
           v.addresses().forEach(a -> servers.put(a, this));
+          rootAddress = v.addresses().get(0);
           servers.put(serverAddress, null);
         }
         case NewServer ns -> {
+          if (ns.address().equals(serverAddress)) return;
           broadcast(packet, targetAddress);
           servers.put(ns.address(), this);
         }
@@ -118,6 +132,7 @@ public final class Application {
             cancelAssignedTasks(mode.source(), t.id());
           } else {
             var assignedTask = cancelRequestedTask(mode.source(), t.id());
+            if (assignedTask == null) return;
             var members = servers.keySet()
                 .stream()
                 .filter(address -> !address.equals(mode.source()))
@@ -127,6 +142,56 @@ public final class Application {
             startTask(new Command.Start(assignedTask.url(), assignedTask.className(), assignedTask.range().from(), assignedTask.range().to(), ""), members);
           }
         }
+        case Disconnection d -> {
+          broadcast(packet, targetAddress);
+          var source = ((TransmissionMode.Broadcast) packet.header().mode()).source();
+
+          var oldContext = servers.remove(source);
+          oldContext.closeConnection();
+          states.clear();
+          assignedTasks.keySet().removeIf(entry -> entry.getKey().equals(source));
+
+          if (source.equals(parentAddress)) {
+            System.out.println("trying to reconnect");
+            Context context;
+            try {
+              parentSocketChannel = SocketChannel.open();
+              parentSocketChannel.configureBlocking(false);
+              var key = parentSocketChannel.register(selector, SelectionKey.OP_CONNECT);
+              context = new Context(key, rootAddress, true);
+              key.attach(context);
+              parentSocketChannel.connect(rootAddress.address());
+            } catch (IOException e) {
+              throw new RuntimeException(e);
+            }
+
+            var oldRoutes = servers.entrySet()
+                .stream()
+                .filter(entry -> entry.getValue() != null)
+                .filter(entry -> source.equals(entry.getValue().address()))
+                .map(Map.Entry::getKey)
+                .toList();
+            oldRoutes.forEach(address -> servers.put(address, context));
+          }
+        }
+        case Reconnection r -> {
+          targetAddress = r.address();
+          var network = Stream.concat(
+              Stream.of(rootAddress),
+              servers.keySet()
+                  .stream()
+                  .filter(address -> !address.equals(rootAddress))
+                  .filter(address -> !r.addresses().contains(address))
+          ).toList();
+          queuePacket(new Packet(new Header(new TransmissionMode.Local(), Validation.OPCODE), new Validation(network)));
+
+          r.addresses().forEach(address -> {
+            if (!address.equals(serverAddress)) {
+              servers.put(address, this);
+            }
+            broadcast(new Packet(new Header(new TransmissionMode.Broadcast(address), NewServer.OPCODE), new NewServer(address)), serverAddress);
+          });
+        }
 
         default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
       }
@@ -134,6 +199,7 @@ public final class Application {
 
     private Task cancelRequestedTask(SocketAddress client, long taskID) {
       var context = tasks.get(taskID);
+      if (context == null) return null;
       return context.requestedTasks.remove(client);
     }
 
@@ -142,6 +208,7 @@ public final class Application {
       var tasks = assignedTasks.get(clientTask);
       if (tasks == null) return;
       tasks.forEach(future -> future.cancel(true));
+      assignedTasks.remove(clientTask);
     }
 
     /**
@@ -150,7 +217,8 @@ public final class Application {
      * @param packet the packet to add
      */
     public void queuePacket(Packet packet) {
-      // logger.info("Send " + packet);
+      if (connectionClosed) return;
+      // logger.info("Send " + packet + " " + targetAddress);
       var buffer = packet.toByteBuffer();
       queue.offer(buffer.flip());
       processOut();
@@ -199,7 +267,12 @@ public final class Application {
         silentlyClose();
         return;
       }
-      key.interestOps(interestOps);
+      try {
+        key.interestOps(interestOps);
+      } catch (CancelledKeyException e) {
+        e.printStackTrace();
+        silentlyClose();
+      }
     }
 
     private void silentlyClose() {
@@ -249,12 +322,34 @@ public final class Application {
         return;
       }
       key.interestOps(SelectionKey.OP_READ);
-      queuePacket(new Packet(new Header(new TransmissionMode.Local(), Connection.OPCODE), new Connection(serverAddress)));
-      System.out.println("Connected");
+      if (isReconnection) {
+        var subNetwork = Stream.concat(
+            Stream.of(serverAddress),
+            selector.keys()
+                .stream()
+                .filter(key -> key.channel() != serverSocketChannel)
+                .map(key -> ((Context)key.attachment()).address())
+                .filter(address -> !address.equals(parentAddress))
+        ).toList();
+
+        queuePacket(new Packet(new Header(new TransmissionMode.Local(), Reconnection.OPCODE), new Reconnection(serverAddress, subNetwork)));
+
+        states.remove(parentAddress);
+        parentAddress = rootAddress;
+
+        System.out.println("Reconnected");
+      } else {
+        queuePacket(new Packet(new Header(new TransmissionMode.Local(), Connection.OPCODE), new Connection(serverAddress)));
+        System.out.println("Connected");
+      }
     }
 
     public SocketAddress address() {
       return targetAddress;
+    }
+
+    public void closeConnection() {
+      connectionClosed = true;
     }
   }
 
@@ -289,6 +384,7 @@ public final class Application {
 
     private boolean canStart() {
       var received = taskMembers.stream()
+          .filter(taskMembers::contains)
           .map(states::get)
           .filter(Objects::nonNull)
           .count();
@@ -370,6 +466,9 @@ public final class Application {
     record Info() implements Command {}
     record Start(String urlJar, String fullyQualifiedName, long startRange, long endRange, String filename) implements Command {}
     record Disconnect() implements Command {}
+    record DisconnectNow() implements Command {}
+    record TestTask(long start, long end) implements Command {}
+    record TestSlowTask(long start, long end) implements Command {}
   }
 
   private static final int BUFFER_SIZE = 1_024;
@@ -377,8 +476,9 @@ public final class Application {
 
   private final ServerSocketChannel serverSocketChannel;
   private final SocketAddress serverAddress;
-  private final SocketChannel parentSocketChannel;
-  private final SocketAddress parentAddress;
+  private SocketChannel parentSocketChannel;
+  private SocketAddress parentAddress;
+  private SocketAddress rootAddress;
   private final Selector selector;
   private final ArrayBlockingQueue<Command> queue = new ArrayBlockingQueue<>(10);
   private final HashMap<SocketAddress, Context> servers = new HashMap<>();
@@ -393,17 +493,18 @@ public final class Application {
 
 
   public Application(int port) throws IOException {
-    serverAddress = new SocketAddress(port);
+    serverAddress = new SocketAddress("localhost", port);
     serverSocketChannel = ServerSocketChannel.open();
     serverSocketChannel.bind(serverAddress.address());
     parentSocketChannel = null;
     parentAddress = null;
+    rootAddress = serverAddress;
     selector = Selector.open();
   }
 
   public Application(int port, SocketAddress parent) throws IOException {
     Objects.requireNonNull(parent);
-    serverAddress = new SocketAddress(port);
+    serverAddress = new SocketAddress("localhost", port);
     parentAddress = parent;
     serverSocketChannel = ServerSocketChannel.open();
     serverSocketChannel.bind(serverAddress.address());
@@ -426,6 +527,8 @@ public final class Application {
             sendCommand(new Command.Start(parts[1], parts[2], Long.parseLong(parts[3]), Long.parseLong(parts[4]), parts[5]));
           }
           case "DISCONNECT" -> sendCommand(new Command.Disconnect());
+          case "TEST_TASK" -> sendCommand(new Command.TestTask(Long.parseLong(parts[1]), Long.parseLong(parts[2])));
+          case "TEST_SLOW_TASK" -> sendCommand(new Command.TestSlowTask(Long.parseLong(parts[1]), Long.parseLong(parts[2])));
           default -> System.out.println("Invalid command");
         }
       }
@@ -459,7 +562,27 @@ public final class Application {
           }
           case Command.Disconnect cmd -> {
             System.out.println("Command Disconnect " + cmd);
+            if (parentAddress == null) return;
             disconnect();
+          }
+          case Command.DisconnectNow ignored -> {
+            if (parentAddress == null) return;
+            closeConnections();
+            System.exit(0);
+          }
+          case Command.TestTask cmd -> {
+            try {
+              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/Factorizer.jar", "fr.uge.factors.Factorizer", cmd.start, cmd.end, "filename"));
+            } catch (InterruptedException e) {
+              throw new AssertionError(e);
+            }
+          }
+          case Command.TestSlowTask cmd -> {
+            try {
+              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/SlowChecker.jar", "fr.uge.slow.SlowChecker", cmd.start, cmd.end, "filename"));
+            } catch (InterruptedException e) {
+              throw new AssertionError(e);
+            }
           }
         }
       }
@@ -467,10 +590,12 @@ public final class Application {
   }
 
   private void info() {
+    System.out.println("Parent : " + parentAddress);
+
     states.put(serverAddress, taskInProgress.get()); // update my taskInProgress
-    var content = servers.keySet()
+    var content = servers.entrySet()
         .stream()
-        .map(address -> "\t- " + address)
+        .map(entry -> "\t- " + entry.getKey() + " - " + (entry.getValue() == null ? null : entry.getValue().address()))
         .collect(Collectors.joining("\n"));
     System.out.println("Members :\n" + content);
 
@@ -479,6 +604,18 @@ public final class Application {
         .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue())
         .collect(Collectors.joining("\n"));
     System.out.println("States :\n" + content);
+
+    content = tasks.entrySet()
+        .stream()
+        .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue().task)
+        .collect(Collectors.joining("\n"));
+    System.out.println("Tasks :\n" + content);
+
+    content = assignedTasks.entrySet()
+        .stream()
+        .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue())
+        .collect(Collectors.joining("\n"));
+    System.out.println("Assigned Tasks :\n" + content);
   }
 
   private void startTask(Command.Start task, Set<SocketAddress> members) {
@@ -486,18 +623,54 @@ public final class Application {
     tasks.put(taskID, taskContext);
     taskID++;
     taskContext.requestState();
+    taskContext.process();
   }
 
   private void disconnect() {
+    sendAnnulationForMyTasks();
+    sendAnnulationForMyAssignedTasks();
+    sendDisconnection();
+    cancelTasks();
+    Thread.ofPlatform().start(() -> {
+      try {
+        Thread.sleep(1000);
+        sendCommand(new Command.DisconnectNow());
+      } catch (InterruptedException e) {
+        throw new AssertionError(e);
+      }
+    });
+  }
+
+  private void closeConnections() {
+    servers.values()
+        .stream()
+        .filter(Objects::nonNull)
+        .forEach(Context::silentlyClose);
+  }
+
+  private void cancelTasks() {
+    executorService.shutdown();
+    try {
+      if (!executorService.awaitTermination(800, TimeUnit.MILLISECONDS)) {
+        executorService.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+    }
+  }
+
+  private void sendAnnulationForMyTasks() {
     tasks.forEach((id, context) -> { // taskMembers have to cancel my task
       context.taskMembers.stream()
           .filter(address -> !address.equals(serverAddress))
           .forEach(address -> {
-            var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, address), AnnulationTask.OPCODE), new AnnulationTask(id, AnnulationTask.CANCEL_MY_TASK, context.task.startRange - 1));
+            var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, address), AnnulationTask.OPCODE), new AnnulationTask(id, AnnulationTask.CANCEL_MY_TASK, 0));
             transfer(address, packet);
           });
     });
+  }
 
+  private void sendAnnulationForMyAssignedTasks() {
     taskStartRemainingValues.forEach((entry, startRemainingValues) -> {
       var address = entry.getKey();
       var id = entry.getValue();
@@ -507,7 +680,11 @@ public final class Application {
       var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, address), AnnulationTask.OPCODE), new AnnulationTask(id, AnnulationTask.CANCEL_ASSIGNED_TASK, startRemainingValues));
       transfer(address, packet);
     });
+  }
 
+  private void sendDisconnection() {
+    var packet = new Packet(new Header(new TransmissionMode.Broadcast(serverAddress), Disconnection.OPCODE), new Disconnection());
+    broadcast(packet, serverAddress);
   }
 
   public void launch() throws IOException {
@@ -586,6 +763,7 @@ public final class Application {
         .stream()
         .filter(key -> key.channel() != serverSocketChannel)
         .map(key -> (Context)key.attachment())
+        .filter(context -> context.address() != null)
         .filter(context -> !context.address().equals(withoutMe))
         .forEach(context -> context.queuePacket(packet));
   }
