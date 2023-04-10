@@ -218,6 +218,7 @@ Reconnexion:
     OPCODE = 11
     - LONG: taille des données d'authentification
     - n BYTES: données d'authentification
+    - SOCKETADDRESS: l'adresse du serveur qui essaie de se reconnecter
     - LIST_SOCKETADDRESS: les adresses des serveurs connectés au sous-réseau
     
     Paquet envoyé par un serveur ayant déjà fait partie du réseau et qui souhaite s'y reconnecter.
