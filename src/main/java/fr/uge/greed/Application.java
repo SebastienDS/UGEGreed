@@ -7,6 +7,10 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -61,7 +65,11 @@ public final class Application {
             return;
           case DONE:
             var packet = reader.get();
-            processPacket(packet);
+            try {
+              processPacket(packet);
+            } catch (IOException e) {
+              throw new UncheckedIOException(e);
+            }
             // logger.info("Receive " + packet);
             reader.reset();
             break;
@@ -69,7 +77,7 @@ public final class Application {
       }
     }
 
-    private void processPacket(Packet packet) {
+    private void processPacket(Packet packet) throws IOException {
       switch(packet.payload()) {
         case Connection c -> {
           targetAddress = c.address();
@@ -138,8 +146,8 @@ public final class Application {
                 .filter(address -> !address.equals(mode.source()))
                 .collect(Collectors.toSet());
             // reassign task to others
-            // TODO get right filename
-            startTask(new Command.Start(assignedTask.url(), assignedTask.className(), assignedTask.range().from(), assignedTask.range().to(), ""), members);
+            var filename = tasks.get(assignedTask.id()).task.filename;
+            startTask(new Command.Start(assignedTask.url(), assignedTask.className(), assignedTask.range().from(), assignedTask.range().to(), filename), members);
           }
         }
         case Disconnection d -> {
@@ -453,18 +461,25 @@ public final class Application {
       });
     }
 
-    public void addResponse(SocketAddress source, ResponseTask response) {
+    public void addResponse(SocketAddress source, ResponseTask response) throws IOException {
       Objects.requireNonNull(source);
       Objects.requireNonNull(response);
       logger.info("Task response : " + source + " - " + response);
-      // TODO
+      if (response.taskStatus() == ResponseTask.OK) {
+        var content = response.response().orElseThrow();
+        Files.writeString(task.filename, content, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+      }
     }
   }
 
 
   private sealed interface Command {
     record Info() implements Command {}
-    record Start(String urlJar, String fullyQualifiedName, long startRange, long endRange, String filename) implements Command {}
+    record Start(String urlJar, String fullyQualifiedName, long startRange, long endRange, Path filename) implements Command {
+      public Start {
+        System.out.println(filename.toAbsolutePath());
+      }
+    }
     record Disconnect() implements Command {}
     record DisconnectNow() implements Command {}
     record TestTask(long start, long end) implements Command {}
@@ -524,7 +539,7 @@ public final class Application {
               System.out.println("Invalid command");
               continue;
             }
-            sendCommand(new Command.Start(parts[1], parts[2], Long.parseLong(parts[3]), Long.parseLong(parts[4]), parts[5]));
+            sendCommand(new Command.Start(parts[1], parts[2], Long.parseLong(parts[3]), Long.parseLong(parts[4]), Path.of(parts[5])));
           }
           case "DISCONNECT" -> sendCommand(new Command.Disconnect());
           case "TEST_TASK" -> sendCommand(new Command.TestTask(Long.parseLong(parts[1]), Long.parseLong(parts[2])));
@@ -572,14 +587,14 @@ public final class Application {
           }
           case Command.TestTask cmd -> {
             try {
-              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/Factorizer.jar", "fr.uge.factors.Factorizer", cmd.start, cmd.end, "filename"));
+              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/Factorizer.jar", "fr.uge.factors.Factorizer", cmd.start, cmd.end, Path.of("test_task.out")));
             } catch (InterruptedException e) {
               throw new AssertionError(e);
             }
           }
           case Command.TestSlowTask cmd -> {
             try {
-              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/SlowChecker.jar", "fr.uge.slow.SlowChecker", cmd.start, cmd.end, "filename"));
+              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/SlowChecker.jar", "fr.uge.slow.SlowChecker", cmd.start, cmd.end, Path.of("test_slow_task.out")));
             } catch (InterruptedException e) {
               throw new AssertionError(e);
             }
@@ -821,7 +836,7 @@ public final class Application {
     }
   }
 
-  private void processResponses() {
+  private void processResponses() throws IOException {
     for (;;) {
       synchronized (responseQueue) {
         var entry = responseQueue.poll();
