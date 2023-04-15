@@ -36,7 +36,7 @@ public final class Application {
   private final Selector selector;
   private final ArrayBlockingQueue<Command> queue = new ArrayBlockingQueue<>(10);
   private final HashMap<SocketAddress, ServerContext> servers = new HashMap<>();
-  private final Set<SocketAddress> siblings = new HashSet<>();
+  private final Set<SocketAddress> neighbors = new HashSet<>();
   private long taskID = 0;
   private final HashMap<Long, TaskContext> tasks = new HashMap<>();
   private final HashMap<SocketAddress, Integer> states = new HashMap<>();
@@ -67,7 +67,6 @@ public final class Application {
     this.maxTaskCapacity = maxTaskCapacity;
     serverAddress = new SocketAddress("localhost", port);
     parentAddress = parent;
-    siblings.add(parentAddress);
     serverSocketChannel = ServerSocketChannel.open();
     serverSocketChannel.bind(serverAddress.address());
     parentSocketChannel = SocketChannel.open();
@@ -158,13 +157,15 @@ public final class Application {
   private void info() {
     System.out.println("Parent : " + parentAddress);
 
-    states.put(serverAddress, tasksInProgress.get()); // update my taskInProgress
     var content = servers.entrySet()
         .stream()
         .map(entry -> "\t- " + entry.getKey() + " - " + (entry.getValue() == null ? null : entry.getValue().address()))
         .collect(Collectors.joining("\n"));
     System.out.println("Members :\n" + content);
 
+    System.out.println("Neighbors : " + neighbors);
+
+    states.put(serverAddress, tasksInProgress.get()); // update my taskInProgress
     content = states.entrySet()
         .stream()
         .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue())
@@ -179,7 +180,7 @@ public final class Application {
 
     content = assignedTasks.entrySet()
         .stream()
-        .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue())
+        .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue().size())
         .collect(Collectors.joining("\n"));
     System.out.println("Assigned Tasks :\n" + content);
   }
@@ -325,7 +326,7 @@ public final class Application {
   }
 
   public void broadcast(Packet packet, SocketAddress withoutMe) {
-    siblings.stream()
+    neighbors.stream()
         .filter(address -> !address.equals(withoutMe))
         .map(servers::get)
         .forEach(context -> context.queuePacket(packet));
@@ -482,8 +483,8 @@ public final class Application {
     parentSocketChannel = channel;
   }
 
-  public Set<SocketAddress> siblings() {
-    return siblings;
+  public Set<SocketAddress> neighbors() {
+    return neighbors;
   }
 
   public Selector selector() {

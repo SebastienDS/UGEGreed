@@ -16,6 +16,7 @@ import java.util.stream.Stream;
 public final class ServerContext implements Context<Packet> {
   private final Application server;
   private final BasicContext<Packet, Packet> context;
+  private final boolean isReconnection;
 
   public ServerContext(Application server, SelectionKey key, SocketAddress targetAddress, boolean isReconnection) {
     Objects.requireNonNull(server);
@@ -26,6 +27,7 @@ public final class ServerContext implements Context<Packet> {
         this::onReceived,
         isReconnection ? this::onReconnection : this::onConnection
     );
+    this.isReconnection = isReconnection;
   }
 
   public ServerContext(Application server, SelectionKey key, SocketAddress targetAddress) {
@@ -82,12 +84,13 @@ public final class ServerContext implements Context<Packet> {
 
   private void onConnection() {
     queuePacket(new Packet(new Header(new TransmissionMode.Local(), Connection.OPCODE), new Connection(server.authentication(), server.address())));
+    server.neighbors().add(server.parentAddress());
   }
 
   private void onReconnection() {
     var subNetwork = Stream.concat(
         Stream.of(server.address()),
-        server.siblings()
+        server.neighbors()
             .stream()
             .filter(address -> !address.equals(server.parentAddress()))
     ).toList();
@@ -96,7 +99,7 @@ public final class ServerContext implements Context<Packet> {
 
     server.states().remove(server.parentAddress());
     server.parentAddress(server.rootAddress());
-    System.out.println("Reconnected");
+    server.neighbors().add(server.parentAddress());
   }
 
   private void processPacket(Optional<Packet> packetOptional) throws IOException {
@@ -111,12 +114,11 @@ public final class ServerContext implements Context<Packet> {
       case Connection c -> {
         if (!server.authentication().equals(c.authentication())) {
           queuePacket(new Packet(new Header(new TransmissionMode.Local(), RejectConnection.OPCODE), new RejectConnection()));
-          System.out.println("refuse connection");
           return;
         }
 
         context.address(c.address());
-        server.siblings().add(c.address());
+        server.neighbors().add(context.address());
         var network = Stream.concat(
             Stream.of(rootAddress),
             servers.keySet().stream().filter(address -> !address.equals(rootAddress))
@@ -126,14 +128,17 @@ public final class ServerContext implements Context<Packet> {
         servers.put(context.address(), this);
       }
       case Validation v -> {
-        System.out.println("Connected");
+        System.out.println(isReconnection ? "Reconnected" : "Connected");
 
         v.addresses().forEach(a -> servers.put(a, this));
         server.rootAddress(v.addresses().get(0));
         servers.put(serverAddress, null);
+        server.neighbors().add(context.address());
       }
       case NewServer ns -> {
         if (ns.address().equals(serverAddress)) return;
+        if (server.neighbors().contains(ns.address())) return;
+
         server.broadcast(packet, context.address());
         servers.put(ns.address(), this);
       }
@@ -159,7 +164,7 @@ public final class ServerContext implements Context<Packet> {
           return;
         }
         if (server.tasksInProgress() > server.maxTaskCapacity()) {
-          queuePacket(new Packet(new Header(new TransmissionMode.Transfer(mode.source(), serverAddress), RejectTask.OPCODE), new RejectTask(t.id())));
+          server.transfer(mode.source(), new Packet(new Header(new TransmissionMode.Transfer(serverAddress, mode.source()), RejectTask.OPCODE), new RejectTask(t.id())));
           return;
         }
 
@@ -190,8 +195,10 @@ public final class ServerContext implements Context<Packet> {
         var source = ((TransmissionMode.Broadcast) packet.header().mode()).source();
 
         var oldContext = servers.remove(source);
-        oldContext.closeConnection();
-        server.siblings().remove(source);
+        if (server.neighbors().contains(source)) {
+          oldContext.closeConnection();
+          server.neighbors().remove(source);
+        }
         server.states().clear();
         server.assignedTasks().keySet().removeIf(entry -> entry.getKey().equals(source));
 
@@ -226,6 +233,8 @@ public final class ServerContext implements Context<Packet> {
         }
 
         context.address(r.address());
+        server.neighbors().add(context.address());
+
         var network = Stream.concat(
             Stream.of(rootAddress),
             servers.keySet()
@@ -243,7 +252,7 @@ public final class ServerContext implements Context<Packet> {
         });
       }
       case RejectConnection r -> {
-        System.out.println("Connection rejected");
+        System.out.println("Connection refused, wrong authentication");
         silentlyClose();
         System.exit(1);
       }

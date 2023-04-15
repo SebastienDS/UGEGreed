@@ -53,7 +53,6 @@ public final class TaskContext {
 
   private boolean canStart() {
     var received = taskMembers.stream()
-        .filter(taskMembers::contains)
         .map(server.states()::get)
         .filter(Objects::nonNull)
         .count();
