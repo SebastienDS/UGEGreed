@@ -107,8 +107,6 @@ public final class ServerContext implements Context<Packet> {
     var serverAddress = server.address();
     var rootAddress = server.rootAddress();
 
-    System.out.println(packet);
-
     switch(packet.payload()) {
       case Connection c -> {
         if (!server.authentication().equals(c.authentication())) {
@@ -160,6 +158,11 @@ public final class ServerContext implements Context<Packet> {
           server.transfer(mode.destination(), packet);
           return;
         }
+        if (server.tasksInProgress() > server.maxTaskCapacity()) {
+          queuePacket(new Packet(new Header(new TransmissionMode.Transfer(mode.source(), serverAddress), RejectTask.OPCODE), new RejectTask(t.id())));
+          return;
+        }
+
         server.queueTask(mode.source(), t);
       }
       case ResponseTask r -> {
@@ -179,15 +182,7 @@ public final class ServerContext implements Context<Packet> {
         if (t.status() == AnnulationTask.CANCEL_MY_TASK) {
           cancelAssignedTasks(mode.source(), t.id());
         } else {
-          var assignedTask = cancelRequestedTask(mode.source(), t.id());
-          if (assignedTask == null) return;
-          var members = servers.keySet()
-              .stream()
-              .filter(address -> !address.equals(mode.source()))
-              .collect(Collectors.toSet());
-          // reassign task to others
-          var filename = server.tasks().get(assignedTask.id()).task().filename();
-          server.startTask(new Command.Start(assignedTask.url(), assignedTask.className(), assignedTask.range().from(), assignedTask.range().to(), filename), members);
+          reassignTask(mode.source(), t.id());
         }
       }
       case Disconnection d -> {
@@ -252,6 +247,14 @@ public final class ServerContext implements Context<Packet> {
         silentlyClose();
         System.exit(1);
       }
+      case RejectTask r -> {
+        var mode = ((TransmissionMode.Transfer) packet.header().mode());
+        if (!mode.destination().equals(serverAddress)) {
+          server.transfer(mode.destination(), packet);
+          return;
+        }
+        reassignTask(mode.source(), r.id());
+      }
 
       default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
     }
@@ -269,5 +272,17 @@ public final class ServerContext implements Context<Packet> {
     if (tasks == null) return;
     tasks.forEach(future -> future.cancel(true));
     server.assignedTasks().remove(clientTask);
+  }
+
+  private void reassignTask(SocketAddress client, long taskID) {
+    var assignedTask = cancelRequestedTask(client, taskID);
+    if (assignedTask == null) return;
+    var members = server.servers().keySet()
+        .stream()
+        .filter(address -> !address.equals(client))
+        .collect(Collectors.toSet());
+    // reassign task to others
+    var filename = server.tasks().get(assignedTask.id()).task().filename();
+    server.startTask(new Command.Start(assignedTask.url(), assignedTask.className(), assignedTask.range().from(), assignedTask.range().to(), filename), members);
   }
 }
