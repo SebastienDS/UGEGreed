@@ -1,16 +1,17 @@
 package fr.uge.greed;
 
-import fr.uge.greed.packet.*;
-import fr.uge.greed.reader.PacketReader;
+import fr.uge.greed.packet.AnnulationTask;
+import fr.uge.greed.packet.Disconnection;
+import fr.uge.greed.packet.ResponseTask;
+import fr.uge.greed.packet.Task;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.ByteBuffer;
+import java.net.InetSocketAddress;
+import java.net.URL;
 import java.nio.channels.*;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -18,476 +19,12 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
-import java.util.stream.Stream;
 
 
 public final class Application {
-  private final class Context {
-    private final SelectionKey key;
-    private final SocketChannel sc;
-    private final PacketReader reader = new PacketReader();
-    private final ByteBuffer bufferIn = ByteBuffer.allocate(BUFFER_SIZE);
-    private final ByteBuffer bufferOut = ByteBuffer.allocate(BUFFER_SIZE);
-    private final ArrayDeque<ByteBuffer> queue = new ArrayDeque<>();
-    private boolean closed = false;
-    private boolean connectionClosed = false;
-    private SocketAddress targetAddress;
-    private final boolean isReconnection;
-
-
-    private Context(SelectionKey key, SocketAddress targetAddress, boolean isReconnection) {
-      this.key = key;
-      this.sc = (SocketChannel) key.channel();
-      this.targetAddress = targetAddress;
-      this.isReconnection = isReconnection;
-    }
-
-    private Context(SelectionKey key, SocketAddress targetAddress) {
-      this(key, targetAddress, false);
-    }
-
-    private Context(SelectionKey key) {
-      this(key, null);
-    }
-
-    /**
-     * Process the content of bufferIn
-     * <p>
-     * The convention is that bufferIn is in write-mode before the call to process and
-     * after the call
-     */
-    private void processIn() {
-      while (bufferIn.hasRemaining()) {
-        switch (reader.process(bufferIn)) {
-          case ERROR:
-            silentlyClose();
-          case REFILL:
-            return;
-          case DONE:
-            var packet = reader.get();
-            try {
-              processPacket(packet);
-            } catch (IOException e) {
-              throw new UncheckedIOException(e);
-            }
-            // logger.info("Receive " + packet);
-            reader.reset();
-            break;
-        }
-      }
-    }
-
-    private void processPacket(Packet packet) throws IOException {
-      switch(packet.payload()) {
-        case Connection c -> {
-          targetAddress = c.address();
-          var network = Stream.concat(
-              Stream.of(rootAddress),
-              servers.keySet().stream().filter(address -> !address.equals(rootAddress))
-          ).toList();
-          queuePacket(new Packet(new Header(new TransmissionMode.Local(), Validation.OPCODE), new Validation(network)));
-          broadcast(new Packet(new Header(new TransmissionMode.Broadcast(targetAddress), NewServer.OPCODE), new NewServer(targetAddress)), targetAddress);
-          servers.put(targetAddress, this);
-        }
-        case Validation v -> {
-          v.addresses().forEach(a -> servers.put(a, this));
-          rootAddress = v.addresses().get(0);
-          servers.put(serverAddress, null);
-        }
-        case NewServer ns -> {
-          if (ns.address().equals(serverAddress)) return;
-          broadcast(packet, targetAddress);
-          servers.put(ns.address(), this);
-        }
-        case RequestState r -> {
-          broadcast(packet, targetAddress);
-          var source = ((TransmissionMode.Broadcast) packet.header().mode()).source();
-          var response = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, source), ResponseState.OPCODE), new ResponseState(taskInProgress.get()));
-          transfer(source, response);
-        }
-        case ResponseState r -> {
-          var mode = ((TransmissionMode.Transfer) packet.header().mode());
-          if (!mode.destination().equals(serverAddress)) {
-            transfer(mode.destination(), packet);
-            return;
-          }
-          states.put(mode.source(), r.tasksInProgress());
-          tasks.values().forEach(TaskContext::process);
-        }
-        case Task t -> {
-          var mode = ((TransmissionMode.Transfer) packet.header().mode());
-          if (!mode.destination().equals(serverAddress)) {
-            transfer(mode.destination(), packet);
-            return;
-          }
-          queueTask(mode.source(), t);
-        }
-        case ResponseTask r -> {
-          var mode = ((TransmissionMode.Transfer) packet.header().mode());
-          if (!mode.destination().equals(serverAddress)) {
-            transfer(mode.destination(), packet);
-            return;
-          }
-          tasks.get(r.taskId()).addResponse(mode.source(), r);
-        }
-        case AnnulationTask t -> {
-          var mode = ((TransmissionMode.Transfer) packet.header().mode());
-          if (!mode.destination().equals(serverAddress)) {
-            transfer(mode.destination(), packet);
-            return;
-          }
-          if (t.status() == AnnulationTask.CANCEL_MY_TASK) {
-            cancelAssignedTasks(mode.source(), t.id());
-          } else {
-            var assignedTask = cancelRequestedTask(mode.source(), t.id());
-            if (assignedTask == null) return;
-            var members = servers.keySet()
-                .stream()
-                .filter(address -> !address.equals(mode.source()))
-                .collect(Collectors.toSet());
-            // reassign task to others
-            var filename = tasks.get(assignedTask.id()).task.filename;
-            startTask(new Command.Start(assignedTask.url(), assignedTask.className(), assignedTask.range().from(), assignedTask.range().to(), filename), members);
-          }
-        }
-        case Disconnection d -> {
-          broadcast(packet, targetAddress);
-          var source = ((TransmissionMode.Broadcast) packet.header().mode()).source();
-
-          var oldContext = servers.remove(source);
-          oldContext.closeConnection();
-          states.clear();
-          assignedTasks.keySet().removeIf(entry -> entry.getKey().equals(source));
-
-          if (source.equals(parentAddress)) {
-            System.out.println("trying to reconnect");
-            Context context;
-            try {
-              parentSocketChannel = SocketChannel.open();
-              parentSocketChannel.configureBlocking(false);
-              var key = parentSocketChannel.register(selector, SelectionKey.OP_CONNECT);
-              context = new Context(key, rootAddress, true);
-              key.attach(context);
-              parentSocketChannel.connect(rootAddress.address());
-            } catch (IOException e) {
-              throw new RuntimeException(e);
-            }
-
-            var oldRoutes = servers.entrySet()
-                .stream()
-                .filter(entry -> entry.getValue() != null)
-                .filter(entry -> source.equals(entry.getValue().address()))
-                .map(Map.Entry::getKey)
-                .toList();
-            oldRoutes.forEach(address -> servers.put(address, context));
-          }
-        }
-        case Reconnection r -> {
-          targetAddress = r.address();
-          var network = Stream.concat(
-              Stream.of(rootAddress),
-              servers.keySet()
-                  .stream()
-                  .filter(address -> !address.equals(rootAddress))
-                  .filter(address -> !r.addresses().contains(address))
-          ).toList();
-          queuePacket(new Packet(new Header(new TransmissionMode.Local(), Validation.OPCODE), new Validation(network)));
-
-          r.addresses().forEach(address -> {
-            if (!address.equals(serverAddress)) {
-              servers.put(address, this);
-            }
-            broadcast(new Packet(new Header(new TransmissionMode.Broadcast(address), NewServer.OPCODE), new NewServer(address)), serverAddress);
-          });
-        }
-
-        default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
-      }
-    }
-
-    private Task cancelRequestedTask(SocketAddress client, long taskID) {
-      var context = tasks.get(taskID);
-      if (context == null) return null;
-      return context.requestedTasks.remove(client);
-    }
-
-    private void cancelAssignedTasks(SocketAddress client, long taskID) {
-      var clientTask = Map.entry(client, taskID);
-      var tasks = assignedTasks.get(clientTask);
-      if (tasks == null) return;
-      tasks.forEach(future -> future.cancel(true));
-      assignedTasks.remove(clientTask);
-    }
-
-    /**
-     * Add a packet to the packet queue, tries to fill bufferOut and updateInterestOps
-     *
-     * @param packet the packet to add
-     */
-    public void queuePacket(Packet packet) {
-      if (connectionClosed) return;
-      // logger.info("Send " + packet + " " + targetAddress);
-      var buffer = packet.toByteBuffer();
-      queue.offer(buffer.flip());
-      processOut();
-      updateInterestOps();
-    }
-
-    /**
-     * Try to fill bufferOut from the packet queue
-     */
-    private void processOut() {
-      while (!queue.isEmpty() && bufferOut.hasRemaining()) {
-        var packet = queue.peek();
-        if (!packet.hasRemaining()) {
-          queue.poll();
-          continue;
-        }
-        if (packet.remaining() <= bufferOut.remaining()) {
-          bufferOut.put(packet);
-        } else {
-          var oldLimit = packet.limit();
-          packet.limit(bufferOut.remaining());
-          bufferOut.put(packet);
-          packet.limit(oldLimit);
-        }
-      }
-    }
-
-    /**
-     * Update the interestOps of the key looking only at values of the boolean
-     * closed and of both ByteBuffers.
-     * <p>
-     * The convention is that both buffers are in write-mode before the call to
-     * updateInterestOps and after the call. Also it is assumed that process has
-     * been be called just before updateInterestOps.
-     */
-    private void updateInterestOps() {
-      int interestOps = 0;
-      if (!closed && bufferIn.hasRemaining()) {
-        interestOps |= SelectionKey.OP_READ;
-      }
-      if (bufferOut.position() != 0) {
-        interestOps |= SelectionKey.OP_WRITE;
-      }
-
-      if (interestOps == 0) {
-        silentlyClose();
-        return;
-      }
-      try {
-        key.interestOps(interestOps);
-      } catch (CancelledKeyException e) {
-        e.printStackTrace();
-        silentlyClose();
-      }
-    }
-
-    private void silentlyClose() {
-      try {
-        sc.close();
-      } catch (IOException e) {
-        // ignore exception
-      }
-    }
-
-    /**
-     * Performs the read action on sc
-     * <p>
-     * The convention is that both buffers are in write-mode before the call to
-     * doRead and after the call
-     *
-     * @throws java.io.IOException if the read fails
-     */
-    private void doRead() throws IOException {
-      if (sc.read(bufferIn) == -1) {
-        logger.info("Connection closed by " + sc.getRemoteAddress());
-        closed = true;
-      }
-      processIn();
-      updateInterestOps();
-    }
-
-    /**
-     * Performs the write action on sc
-     * <p>
-     * The convention is that both buffers are in write-mode before the call to
-     * doWrite and after the call
-     *
-     * @throws java.io.IOException if the write fails
-     */
-
-    private void doWrite() throws IOException {
-      bufferOut.flip();
-      sc.write(bufferOut);
-      bufferOut.compact();
-      processOut();
-      updateInterestOps();
-    }
-
-    public void doConnect() throws IOException {
-      if (!sc.finishConnect()) {
-        return;
-      }
-      key.interestOps(SelectionKey.OP_READ);
-      if (isReconnection) {
-        var subNetwork = Stream.concat(
-            Stream.of(serverAddress),
-            selector.keys()
-                .stream()
-                .filter(key -> key.channel() != serverSocketChannel)
-                .map(key -> ((Context)key.attachment()).address())
-                .filter(address -> !address.equals(parentAddress))
-        ).toList();
-
-        queuePacket(new Packet(new Header(new TransmissionMode.Local(), Reconnection.OPCODE), new Reconnection(serverAddress, subNetwork)));
-
-        states.remove(parentAddress);
-        parentAddress = rootAddress;
-
-        System.out.println("Reconnected");
-      } else {
-        queuePacket(new Packet(new Header(new TransmissionMode.Local(), Connection.OPCODE), new Connection(serverAddress)));
-        System.out.println("Connected");
-      }
-    }
-
-    public SocketAddress address() {
-      return targetAddress;
-    }
-
-    public void closeConnection() {
-      connectionClosed = true;
-    }
-  }
-
-  private final class TaskContext {
-    private final long taskID;
-    private final Command.Start task;
-    private final Set<SocketAddress> taskMembers;
-    private boolean tasksSent;
-    private final HashMap<SocketAddress, Task> requestedTasks = new HashMap<>();
-
-    public TaskContext(long taskID, Command.Start task, Set<SocketAddress> taskMember) {
-      Objects.requireNonNull(task);
-      Objects.requireNonNull(taskMember);
-      this.taskID = taskID;
-      this.task = task;
-      this.taskMembers = taskMember;
-    }
-
-    public void requestState() {
-      taskMembers.forEach(address -> states.put(address, null)); // reset state
-      states.put(serverAddress, taskInProgress.get()); // add my state
-      broadcast(new Packet(new Header(new TransmissionMode.Broadcast(serverAddress), RequestState.OPCODE), new RequestState()), serverAddress);
-    }
-
-    public void process() {
-      if (tasksSent || !canStart()) {
-        return;
-      }
-      requestTasks();
-      tasksSent = true;
-    }
-
-    private boolean canStart() {
-      var received = taskMembers.stream()
-          .filter(taskMembers::contains)
-          .map(states::get)
-          .filter(Objects::nonNull)
-          .count();
-      return received == taskMembers.size();
-    }
-
-    private void requestTasks() {
-      var members = states.entrySet()
-          .stream()
-          .filter(entry -> taskMembers.contains(entry.getKey()))
-          .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-      var tasksCount = Math.abs(task.endRange - task.startRange) + 1;
-      var distribution = distributeTasks(tasksCount, members);
-      createTasks(distribution);
-      sendTasks();
-    }
-
-    private static Map<SocketAddress, Integer> distributeTasks(long numTasks, Map<SocketAddress, Integer> tasksInProgress) {
-      var totalTasksInProgress = tasksInProgress.values().stream().mapToInt(Integer::intValue).sum();
-      var idealTasksPerServer = (numTasks + totalTasksInProgress) / tasksInProgress.size();
-      var remainingTasks = numTasks;
-      var distribution = new HashMap<SocketAddress, Integer>();
-
-      for (var entry : tasksInProgress.entrySet()) {
-        var address = entry.getKey();
-        var tasks = entry.getValue();
-        var extraTasks = 0;
-        if (tasks < idealTasksPerServer) {
-          extraTasks = (int) Math.min(remainingTasks, idealTasksPerServer - tasks);
-          remainingTasks -= extraTasks;
-        }
-        distribution.put(address, extraTasks);
-      }
-      if (remainingTasks > 0) {
-        var address = distribution.keySet().stream().findAny().orElseThrow();
-        distribution.merge(address, (int) remainingTasks, Integer::sum);
-      }
-      return distribution;
-    }
-
-    private void createTasks(Map<SocketAddress, Integer> distribution) {
-      var taskIndex = 0L;
-      for (var entry : distribution.entrySet()) {
-        var assignedTaskCount = entry.getValue();
-        if (assignedTaskCount == 0) {
-          continue;
-        }
-        var start = task.startRange + taskIndex;
-        var end = start + assignedTaskCount - 1;
-        var newTask = new Task(taskID, task.urlJar, task.fullyQualifiedName, new Task.Range(start, end));
-        taskIndex += assignedTaskCount;
-
-        requestedTasks.put(entry.getKey(), newTask);
-      }
-      logger.info("Tasks created : " + requestedTasks);
-    }
-
-    private void sendTasks() {
-      requestedTasks.forEach((address, task) -> {
-        if (address.equals(serverAddress)) { // no context for myself, nothing to send
-          queueTask(serverAddress, task);
-        } else {
-          var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, address), Task.OPCODE), task);
-          transfer(address, packet);
-        }
-      });
-    }
-
-    public void addResponse(SocketAddress source, ResponseTask response) throws IOException {
-      Objects.requireNonNull(source);
-      Objects.requireNonNull(response);
-      logger.info("Task response : " + source + " - " + response);
-      if (response.taskStatus() == ResponseTask.OK) {
-        var content = response.response().orElseThrow();
-        Files.writeString(task.filename, content, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
-      }
-    }
-  }
-
-
-  private sealed interface Command {
-    record Info() implements Command {}
-    record Start(String urlJar, String fullyQualifiedName, long startRange, long endRange, Path filename) implements Command {
-      public Start {
-        System.out.println(filename.toAbsolutePath());
-      }
-    }
-    record Disconnect() implements Command {}
-    record DisconnectNow() implements Command {}
-    record TestTask(long start, long end) implements Command {}
-    record TestSlowTask(long start, long end) implements Command {}
-  }
-
-  private static final int BUFFER_SIZE = 1_024;
   private static final Logger logger = Logger.getLogger(Application.class.getName());
+
+  private static final String CHECKER_DIRECTORY = "checkers";
 
   private final ServerSocketChannel serverSocketChannel;
   private final SocketAddress serverAddress;
@@ -496,12 +33,13 @@ public final class Application {
   private SocketAddress rootAddress;
   private final Selector selector;
   private final ArrayBlockingQueue<Command> queue = new ArrayBlockingQueue<>(10);
-  private final HashMap<SocketAddress, Context> servers = new HashMap<>();
+  private final HashMap<SocketAddress, ServerContext> servers = new HashMap<>();
+  private final Set<SocketAddress> siblings = new HashSet<>();
   private long taskID = 0;
   private final HashMap<Long, TaskContext> tasks = new HashMap<>();
   private final HashMap<SocketAddress, Integer> states = new HashMap<>();
   private final ExecutorService executorService = Executors.newFixedThreadPool(10);
-  private final AtomicInteger taskInProgress = new AtomicInteger();
+  private final AtomicInteger tasksInProgress = new AtomicInteger();
   private final ArrayBlockingQueue<Map.Entry<SocketAddress, ResponseTask>> responseQueue = new ArrayBlockingQueue<>(10);
   private final ConcurrentHashMap<Map.Entry<SocketAddress, Long>, Long> taskStartRemainingValues = new ConcurrentHashMap<>();
   private final HashMap<Map.Entry<SocketAddress, Long>, List<? extends Future<?>>> assignedTasks = new HashMap<>();
@@ -521,10 +59,19 @@ public final class Application {
     Objects.requireNonNull(parent);
     serverAddress = new SocketAddress("localhost", port);
     parentAddress = parent;
+    siblings.add(parentAddress);
     serverSocketChannel = ServerSocketChannel.open();
     serverSocketChannel.bind(serverAddress.address());
     parentSocketChannel = SocketChannel.open();
     selector = Selector.open();
+  }
+
+  private void launchHTTPRequest(HTTPContext.Request request) throws IOException {
+    var channel = SocketChannel.open();
+    channel.configureBlocking(false);
+    var key = channel.register(selector, SelectionKey.OP_CONNECT);
+    key.attach(new HTTPContext(this, key, request));
+    channel.connect(new InetSocketAddress(request.host(), 80));
   }
 
   private void consoleRun() {
@@ -544,6 +91,7 @@ public final class Application {
           case "DISCONNECT" -> sendCommand(new Command.Disconnect());
           case "TEST_TASK" -> sendCommand(new Command.TestTask(Long.parseLong(parts[1]), Long.parseLong(parts[2])));
           case "TEST_SLOW_TASK" -> sendCommand(new Command.TestSlowTask(Long.parseLong(parts[1]), Long.parseLong(parts[2])));
+          case "TEST" -> sendCommand(new Command.Test());
           default -> System.out.println("Invalid command");
         }
       }
@@ -561,7 +109,7 @@ public final class Application {
     }
   }
 
-  private void processCommands() {
+  private void processCommands() throws IOException, InterruptedException {
     for (;;) {
       synchronized (queue) {
         var command = queue.poll();
@@ -586,18 +134,13 @@ public final class Application {
             System.exit(0);
           }
           case Command.TestTask cmd -> {
-            try {
-              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/Factorizer.jar", "fr.uge.factors.Factorizer", cmd.start, cmd.end, Path.of("test_task.out")));
-            } catch (InterruptedException e) {
-              throw new AssertionError(e);
-            }
+            sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/Factorizer.jar", "fr.uge.factors.Factorizer", cmd.start(), cmd.end(), Path.of("test_task.out")));
           }
           case Command.TestSlowTask cmd -> {
-            try {
-              sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/SlowChecker.jar", "fr.uge.slow.SlowChecker", cmd.start, cmd.end, Path.of("test_slow_task.out")));
-            } catch (InterruptedException e) {
-              throw new AssertionError(e);
-            }
+            sendCommand(new Command.Start("http://www-igm.univ-mlv.fr/~carayol/SlowChecker.jar", "fr.uge.slow.SlowChecker", cmd.start(), cmd.end(), Path.of("test_slow_task.out")));
+          }
+          case Command.Test cmd -> {
+            System.out.println("Command Test");
           }
         }
       }
@@ -607,7 +150,7 @@ public final class Application {
   private void info() {
     System.out.println("Parent : " + parentAddress);
 
-    states.put(serverAddress, taskInProgress.get()); // update my taskInProgress
+    states.put(serverAddress, tasksInProgress.get()); // update my taskInProgress
     var content = servers.entrySet()
         .stream()
         .map(entry -> "\t- " + entry.getKey() + " - " + (entry.getValue() == null ? null : entry.getValue().address()))
@@ -622,7 +165,7 @@ public final class Application {
 
     content = tasks.entrySet()
         .stream()
-        .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue().task)
+        .map(entry -> "\t- " + entry.getKey() + " - " + entry.getValue().task())
         .collect(Collectors.joining("\n"));
     System.out.println("Tasks :\n" + content);
 
@@ -633,8 +176,8 @@ public final class Application {
     System.out.println("Assigned Tasks :\n" + content);
   }
 
-  private void startTask(Command.Start task, Set<SocketAddress> members) {
-    var taskContext = new TaskContext(taskID, task, members);
+  public void startTask(Command.Start task, Set<SocketAddress> members) {
+    var taskContext = new TaskContext(this, taskID, task, members);
     tasks.put(taskID, taskContext);
     taskID++;
     taskContext.requestState();
@@ -676,7 +219,7 @@ public final class Application {
 
   private void sendAnnulationForMyTasks() {
     tasks.forEach((id, context) -> { // taskMembers have to cancel my task
-      context.taskMembers.stream()
+      context.taskMembers().stream()
           .filter(address -> !address.equals(serverAddress))
           .forEach(address -> {
             var packet = new Packet(new Header(new TransmissionMode.Transfer(serverAddress, address), AnnulationTask.OPCODE), new AnnulationTask(id, AnnulationTask.CANCEL_MY_TASK, 0));
@@ -702,14 +245,14 @@ public final class Application {
     broadcast(packet, serverAddress);
   }
 
-  public void launch() throws IOException {
+  public void launch() throws IOException, InterruptedException {
     serverSocketChannel.configureBlocking(false);
     serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
 
     if (parentSocketChannel != null) {
       parentSocketChannel.configureBlocking(false);
       var key = parentSocketChannel.register(selector, SelectionKey.OP_CONNECT);
-      key.attach(new Context(key, parentAddress));
+      key.attach(new ServerContext(this, key, parentAddress));
       parentSocketChannel.connect(parentAddress.address());
     }
     else {
@@ -740,13 +283,13 @@ public final class Application {
     }
     try {
       if (key.isValid() && key.isConnectable()) {
-        ((Context) key.attachment()).doConnect();
+        ((Context<?>) key.attachment()).doConnect();
       }
       if (key.isValid() && key.isWritable()) {
-        ((Context) key.attachment()).doWrite();
+        ((Context<?>) key.attachment()).doWrite();
       }
       if (key.isValid() && key.isReadable()) {
-        ((Context) key.attachment()).doRead();
+        ((Context<?>) key.attachment()).doRead();
       }
     } catch (IOException e) {
       logger.log(Level.INFO, "Connection closed with client due to IOException");
@@ -761,7 +304,7 @@ public final class Application {
     }
     client.configureBlocking(false);
     var selectionKey = client.register(selector, SelectionKey.OP_READ);
-    selectionKey.attach(new Context(selectionKey));
+    selectionKey.attach(new ServerContext(this, selectionKey));
   }
 
   private void silentlyClose(SelectionKey key) {
@@ -773,29 +316,58 @@ public final class Application {
     }
   }
 
-  private void broadcast(Packet packet, SocketAddress withoutMe) {
-    selector.keys()
-        .stream()
-        .filter(key -> key.channel() != serverSocketChannel)
-        .map(key -> (Context)key.attachment())
-        .filter(context -> context.address() != null)
-        .filter(context -> !context.address().equals(withoutMe))
+  public void broadcast(Packet packet, SocketAddress withoutMe) {
+    siblings.stream()
+        .filter(address -> !address.equals(withoutMe))
+        .map(servers::get)
         .forEach(context -> context.queuePacket(packet));
   }
 
-  private void transfer(SocketAddress destination, Packet packet) {
+  public void transfer(SocketAddress destination, Packet packet) {
     var context = servers.get(destination);
     if (context == null) return;
     context.queuePacket(packet);
   }
 
-  private void queueTask(SocketAddress source, Task task) {
-    // logger.info("task queued " + source + " " + task);
+  public void queueTask(SocketAddress source, Task task) throws IOException {
+    Objects.requireNonNull(source);
+    Objects.requireNonNull(task);
+    var url = new URL(task.url());
+    var checker_path = Path.of(CHECKER_DIRECTORY, url.getHost(), url.getPath());
+
+    if (Files.exists(checker_path)) {
+      System.out.println("From files");
+      launchTask(source, task, checker_path);
+    } else {
+      System.out.println("From http");
+      var request = new HTTPContext.Request(url.getHost(), url.getPath(), (response) -> {
+        if (response.isEmpty()) {
+          sendResponse(source, new ResponseTask(task.id(), ResponseTask.DOWNLOAD_ERROR, Optional.empty()));
+          return;
+        }
+
+        System.out.println("Response received, Launch tasks");
+        try {
+          checker_path.getParent().toFile().mkdirs();
+          try (var stream = Files.newOutputStream(checker_path)) {
+            stream.write(response.get().body().array());
+          }
+        } catch (IOException e) {
+          throw new UncheckedIOException(e);
+        }
+
+        launchTask(source, task, checker_path);
+      });
+      launchHTTPRequest(request);
+    }
+  }
+
+  private void launchTask(SocketAddress source, Task task, Path checker_path) {
     var clientTask = Map.entry(source, task.id());
 
     taskStartRemainingValues.put(clientTask, task.range().from());
 
-    var checkerOptional = Client.checkerFromHTTP(task.url(),task.className());
+    var checkerOptional = Client.checkerFromDisk(checker_path, task.className());
     if (checkerOptional.isEmpty()) {
       var response = new ResponseTask(task.id(), ResponseTask.DOWNLOAD_ERROR, Optional.empty());
       sendResponse(source, response);
@@ -803,15 +375,13 @@ public final class Application {
     }
 
     var checker = checkerOptional.orElseThrow();
-    taskInProgress.getAndUpdate(x -> (int) (x + Math.abs(task.range().to() - task.range().from()) + 1));
+
+    tasksInProgress.getAndUpdate(x -> (int) (x + Math.abs(task.range().to() - task.range().from()) + 1));
 
     var submittedTasks = LongStream.rangeClosed(task.range().from(), task.range().to())
         .mapToObj(value -> executorService.submit(() -> {
           try {
-            String result;
-            synchronized (checker) {
-              result = checker.check(value);
-            }
+            var result = checker.check(value);
             var response = new ResponseTask(task.id(), ResponseTask.OK, Optional.of(result));
             sendResponse(source, response);
           } catch (InterruptedException e) {
@@ -823,7 +393,7 @@ public final class Application {
           }
 
           taskStartRemainingValues.merge(clientTask, value, (a, b) -> b > a ? b : a);
-          taskInProgress.getAndDecrement();
+          tasksInProgress.getAndDecrement();
         })).toList();
 
     assignedTasks.put(clientTask, submittedTasks);
@@ -857,7 +427,62 @@ public final class Application {
     }
   }
 
-  public static void main(String[] args) throws NumberFormatException, IOException {
+  public SocketAddress address() {
+    return serverAddress;
+  }
+
+  public SocketAddress rootAddress() {
+    return rootAddress;
+  }
+
+  public void rootAddress(SocketAddress rootAddress) {
+    Objects.requireNonNull(rootAddress);
+    this.rootAddress = rootAddress;
+  }
+
+  public SocketAddress parentAddress() {
+    return parentAddress;
+  }
+
+  public void parentAddress(SocketAddress parentAddress) {
+    Objects.requireNonNull(parentAddress);
+    this.parentAddress = parentAddress;
+  }
+
+  public Map<SocketAddress, ServerContext> servers() {
+    return servers;
+  }
+
+  public int tasksInProgress() {
+    return tasksInProgress.get();
+  }
+
+  public Map<SocketAddress, Integer> states() {
+    return states;
+  }
+
+  public Map<Long, TaskContext> tasks() {
+    return tasks;
+  }
+
+  public Map<Map.Entry<SocketAddress, Long>, List<? extends Future<?>>> assignedTasks() {
+    return assignedTasks;
+  }
+
+  public void parentSocketChannel(SocketChannel channel) {
+    Objects.requireNonNull(channel);
+    parentSocketChannel = channel;
+  }
+
+  public Set<SocketAddress> siblings() {
+    return siblings;
+  }
+
+  public Selector selector() {
+    return selector;
+  }
+
+  public static void main(String[] args) throws NumberFormatException, IOException, InterruptedException {
     if (args.length == 1) {
       new Application(Integer.parseInt(args[0])).launch();
     } else if (args.length == 3) {
