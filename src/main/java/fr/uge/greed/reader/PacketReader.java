@@ -25,7 +25,7 @@ public class PacketReader implements Reader<Packet> {
   private Packet packet;
   @SuppressWarnings("unchecked") // Safe cast, Trust the process
   private final List<Reader<? extends Payload>> readers = List.of(
-      /* 0 */ new GenericReader<>(List.of(socketAddressReader), parts -> new Connection((SocketAddress) parts.get(0))),
+      /* 0 */ new GenericReader<>(List.of(stringReader, socketAddressReader), parts -> new Connection((String) parts.get(0), (SocketAddress) parts.get(1))),
       /* 1 */ new GenericReader<>(List.of(listSocketAddressReader), parts -> new Validation((List<SocketAddress>) parts.get(0))),
       /* 2 */ new GenericReader<>(List.of(), parts -> new RejectConnection()),
       /* 3 */ new GenericReader<>(List.of(socketAddressReader), parts -> new NewServer((SocketAddress) parts.get(0))),
@@ -39,7 +39,10 @@ public class PacketReader implements Reader<Packet> {
       /* 8 */ new ResponseTaskReader(),
       /* 9 */ new GenericReader<>(List.of(longReader, byteReader, longReader), parts -> new AnnulationTask((long) parts.get(0), (byte) parts.get(1), (long) parts.get(2))),
       /* 10 */ new GenericReader<>(List.of(), parts -> new Disconnection()),
-      /* 11 */ new GenericReader<>(List.of(socketAddressReader, listSocketAddressReader), parts -> new Reconnection((SocketAddress) parts.get(0), (List<SocketAddress>) parts.get(1)))
+      /* 11 */ new GenericReader<>(
+          List.of(stringReader, socketAddressReader, listSocketAddressReader),
+          parts -> new Reconnection((String) parts.get(0), (SocketAddress) parts.get(1), (List<SocketAddress>) parts.get(2))
+      )
   );
 
   @Override

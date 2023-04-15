@@ -26,6 +26,7 @@ public final class Application {
 
   private static final String CHECKER_DIRECTORY = "checkers";
 
+  private final String authentication;
   private final ServerSocketChannel serverSocketChannel;
   private final SocketAddress serverAddress;
   private SocketChannel parentSocketChannel;
@@ -45,7 +46,9 @@ public final class Application {
   private final HashMap<Map.Entry<SocketAddress, Long>, List<? extends Future<?>>> assignedTasks = new HashMap<>();
 
 
-  public Application(int port) throws IOException {
+  public Application(String authentication, int port) throws IOException {
+    Objects.requireNonNull(authentication);
+    this.authentication = authentication;
     serverAddress = new SocketAddress("localhost", port);
     serverSocketChannel = ServerSocketChannel.open();
     serverSocketChannel.bind(serverAddress.address());
@@ -55,8 +58,10 @@ public final class Application {
     selector = Selector.open();
   }
 
-  public Application(int port, SocketAddress parent) throws IOException {
+  public Application(String authentication, int port, SocketAddress parent) throws IOException {
+    Objects.requireNonNull(authentication);
     Objects.requireNonNull(parent);
+    this.authentication = authentication;
     serverAddress = new SocketAddress("localhost", port);
     parentAddress = parent;
     siblings.add(parentAddress);
@@ -482,13 +487,17 @@ public final class Application {
     return selector;
   }
 
+  public String authentication() {
+    return authentication;
+  }
+
   public static void main(String[] args) throws NumberFormatException, IOException, InterruptedException {
-    if (args.length == 1) {
-      new Application(Integer.parseInt(args[0])).launch();
-    } else if (args.length == 3) {
-      new Application(Integer.parseInt(args[0]), new SocketAddress(args[1], Integer.parseInt(args[2]))).launch();
-    } else {
-      usage();
+    switch (args.length) {
+      case 1 -> new Application("", Integer.parseInt(args[0])).launch();
+      case 2 -> new Application(args[0], Integer.parseInt(args[1])).launch();
+      case 3 -> new Application("", Integer.parseInt(args[0]), new SocketAddress(args[1], Integer.parseInt(args[2]))).launch();
+      case 4 -> new Application(args[0], Integer.parseInt(args[1]), new SocketAddress(args[2], Integer.parseInt(args[3]))).launch();
+      default -> usage();
     }
   }
 
@@ -496,7 +505,9 @@ public final class Application {
     System.out.println("""
       Usage :
         - Application port
+        - Application auth port
         - Application port hostname_parent port_parent
+        - Application auth port hostname_parent port_parent
       """);
   }
 }

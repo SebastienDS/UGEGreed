@@ -81,8 +81,7 @@ public final class ServerContext implements Context<Packet> {
   }
 
   private void onConnection() {
-    queuePacket(new Packet(new Header(new TransmissionMode.Local(), Connection.OPCODE), new Connection(server.address())));
-    System.out.println("Connected");
+    queuePacket(new Packet(new Header(new TransmissionMode.Local(), Connection.OPCODE), new Connection(server.authentication(), server.address())));
   }
 
   private void onReconnection() {
@@ -93,7 +92,7 @@ public final class ServerContext implements Context<Packet> {
             .filter(address -> !address.equals(server.parentAddress()))
     ).toList();
 
-    queuePacket(new Packet(new Header(new TransmissionMode.Local(), Reconnection.OPCODE), new Reconnection(server.address(), subNetwork)));
+    queuePacket(new Packet(new Header(new TransmissionMode.Local(), Reconnection.OPCODE), new Reconnection(server.authentication(), server.address(), subNetwork)));
 
     server.states().remove(server.parentAddress());
     server.parentAddress(server.rootAddress());
@@ -108,8 +107,16 @@ public final class ServerContext implements Context<Packet> {
     var serverAddress = server.address();
     var rootAddress = server.rootAddress();
 
+    System.out.println(packet);
+
     switch(packet.payload()) {
       case Connection c -> {
+        if (!server.authentication().equals(c.authentication())) {
+          queuePacket(new Packet(new Header(new TransmissionMode.Local(), RejectConnection.OPCODE), new RejectConnection()));
+          System.out.println("refuse connection");
+          return;
+        }
+
         context.address(c.address());
         server.siblings().add(c.address());
         var network = Stream.concat(
@@ -121,6 +128,8 @@ public final class ServerContext implements Context<Packet> {
         servers.put(context.address(), this);
       }
       case Validation v -> {
+        System.out.println("Connected");
+
         v.addresses().forEach(a -> servers.put(a, this));
         server.rootAddress(v.addresses().get(0));
         servers.put(serverAddress, null);
@@ -216,6 +225,11 @@ public final class ServerContext implements Context<Packet> {
         }
       }
       case Reconnection r -> {
+        if (!server.authentication().equals(r.authentication())) {
+          queuePacket(new Packet(new Header(new TransmissionMode.Local(), RejectConnection.OPCODE), new RejectConnection()));
+          return;
+        }
+
         context.address(r.address());
         var network = Stream.concat(
             Stream.of(rootAddress),
@@ -232,6 +246,11 @@ public final class ServerContext implements Context<Packet> {
           }
           server.broadcast(new Packet(new Header(new TransmissionMode.Broadcast(address), NewServer.OPCODE), new NewServer(address)), serverAddress);
         });
+      }
+      case RejectConnection r -> {
+        System.out.println("Connection rejected");
+        silentlyClose();
+        System.exit(1);
       }
 
       default -> throw new IllegalStateException("Unexpected value: " + packet.payload());
