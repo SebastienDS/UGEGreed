@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -17,7 +16,7 @@ public class GenericReaderTest {
 
   @Test
   public void simple() {
-    var reader = new GenericReader<>(List.of(), parts -> new Empty());
+    var reader = GenericReader.create(builder -> Empty::new);
     var bb = ByteBuffer.allocate(0);
     assertEquals(Reader.ProcessStatus.DONE, reader.process(bb));
     assertEquals(new Empty(), reader.get());
@@ -26,10 +25,11 @@ public class GenericReaderTest {
   @Test
   public void simpleMessage() {
     var stringReader = new StringReader();
-    var messageReader = new GenericReader<>(
-        List.of(stringReader, stringReader),
-        parts -> new Message((String) parts.get(0), (String) parts.get(1))
-    );
+    var messageReader = GenericReader.create(builder -> {
+      var login = builder.add(stringReader);
+      var message = builder.add(stringReader);
+      return () ->  new Message(login.get(), message.get());
+    });
 
     var message = new Message("login", "content");
     var bb = ByteBuffer.allocate(1024);
@@ -49,10 +49,13 @@ public class GenericReaderTest {
 
   @Test
   public void completePacket() {
-    var reader = new GenericReader<>(
-        List.of(new ByteReader(), new IntReader(), new StringReader(), new SocketAddressReader()),
-        parts -> new CompletePacket((byte) parts.get(0), (int) parts.get(1), (String) parts.get(2), (SocketAddress) parts.get(3))
-    );
+    var reader = GenericReader.create(builder -> {
+      var a = builder.add(new ByteReader());
+      var b = builder.add(new IntReader());
+      var c = builder.add(new StringReader());
+      var d = builder.add(new SocketAddressReader());
+      return () ->  new CompletePacket(a.get(), b.get(), c.get(), d.get());
+    });
 
     var packet = new CompletePacket((byte)1, 10, "content", new SocketAddress("127.0.0.1", 7777));
 
@@ -79,10 +82,11 @@ public class GenericReaderTest {
   @Test
   public void reset() {
     var stringReader = new StringReader();
-    var messageReader = new GenericReader<>(
-        List.of(stringReader, stringReader),
-        parts -> new Message((String) parts.get(0), (String) parts.get(1))
-    );
+    var messageReader = GenericReader.create(builder -> {
+      var login = builder.add(stringReader);
+      var message = builder.add(stringReader);
+      return () ->  new Message(login.get(), message.get());
+    });
 
     var message = new Message("login", "content");
     var message2 = new Message("login2", "content2");
@@ -118,10 +122,11 @@ public class GenericReaderTest {
   @Test
   public void smallBuffer() {
     var stringReader = new StringReader();
-    var messageReader = new GenericReader<>(
-        List.of(stringReader, stringReader),
-        parts -> new Message((String) parts.get(0), (String) parts.get(1))
-    );
+    var messageReader = GenericReader.create(builder -> {
+      var login = builder.add(stringReader);
+      var message = builder.add(stringReader);
+      return () ->  new Message(login.get(), message.get());
+    });
 
     var message = new Message("login", "content");
     var bb = ByteBuffer.allocate(1024);
@@ -149,10 +154,11 @@ public class GenericReaderTest {
   @Test
   public void errorGet() {
     var stringReader = new StringReader();
-    var messageReader = new GenericReader<>(
-        List.of(stringReader, stringReader),
-        parts -> new Message((String) parts.get(0), (String) parts.get(1))
-    );
+    var messageReader = GenericReader.create(builder -> {
+      var login = builder.add(stringReader);
+      var message = builder.add(stringReader);
+      return () ->  new Message(login.get(), message.get());
+    });
     assertThrows(IllegalStateException.class, () -> {
         var res = messageReader.get();
     });

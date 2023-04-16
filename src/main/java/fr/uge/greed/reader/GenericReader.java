@@ -2,64 +2,79 @@ package fr.uge.greed.reader;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
-public class GenericReader<T> implements Reader<T> {
-  enum State {
-    DONE, WAITING, ERROR;
+public final class GenericReader {
+  interface Builder {
+    <E> Supplier<E> add(Reader<E> reader);
   }
 
-  private final List<Reader<?>> readers;
-  private final Function<List<Object>, T> mapper;
-  private State state = State.WAITING;
-  private int current = 0;
-  private final ArrayList<Object> parts = new ArrayList<>();
+  private GenericReader() {}
 
-
-  public GenericReader(List<Reader<?>> readers, Function<List<Object>, T> mapper) {
-    Objects.requireNonNull(readers);
+  public static <T> Reader<T> create(Function<Builder, Supplier<T>> mapper) {
     Objects.requireNonNull(mapper);
-    this.readers = List.copyOf(readers);
-    this.mapper = mapper;
-  }
+    var readers = new ArrayList<Reader<?>>();
+    var parts = new ArrayList<>();
 
-  @Override
-  public Reader.ProcessStatus process(ByteBuffer buffer) {
-    Objects.requireNonNull(buffer);
-    if (state == State.DONE || state == State.ERROR) {
-      throw new IllegalStateException();
-    }
+    var supplier = mapper.apply(new Builder() {
+      @Override
+      @SuppressWarnings("unchecked")
+      public <E> Supplier<E> add(Reader<E> reader) {
+        Objects.requireNonNull(reader);
+        var index = readers.size();
+        readers.add(reader);
+        return () -> (E)parts.get(index);
+      }
+    });
 
-    for (; current < readers.size(); current++) {
-      var reader = readers.get(current);
-      var status = reader.process(buffer);
-      if (status == Reader.ProcessStatus.ERROR || status == Reader.ProcessStatus.REFILL) {
-        return status;
+    Objects.requireNonNull(supplier);
+    return new Reader<>() {
+      enum State {
+        DONE, WAITING, ERROR;
       }
 
-      parts.add(reader.get());
-      reader.reset();
-    }
+      private State state = State.WAITING;
+      private int current = 0;
 
-    state = State.DONE;
-    return Reader.ProcessStatus.DONE;
-  }
+      @Override
+      public Reader.ProcessStatus process(ByteBuffer buffer) {
+        Objects.requireNonNull(buffer);
+        if (state == State.DONE || state == State.ERROR) {
+          throw new IllegalStateException();
+        }
 
-  @Override
-  public T get() {
-    if (state != State.DONE) {
-      throw new IllegalStateException();
-    }
-    return mapper.apply(parts);
-  }
+        for (; current < readers.size(); current++) {
+          var reader = readers.get(current);
+          var status = reader.process(buffer);
+          if (status == Reader.ProcessStatus.ERROR || status == Reader.ProcessStatus.REFILL) {
+            return status;
+          }
 
-  @Override
-  public void reset() {
-    state = State.WAITING;
-    readers.forEach(Reader::reset);
-    parts.clear();
-    current = 0;
+          parts.add(reader.get());
+          reader.reset();
+        }
+
+        state = State.DONE;
+        return Reader.ProcessStatus.DONE;
+      }
+
+      @Override
+      public T get() {
+        if (state != State.DONE) {
+          throw new IllegalStateException();
+        }
+        return supplier.get();
+      }
+
+      @Override
+      public void reset() {
+        state = State.WAITING;
+        readers.forEach(Reader::reset);
+        parts.clear();
+        current = 0;
+      }
+    };
   }
 }

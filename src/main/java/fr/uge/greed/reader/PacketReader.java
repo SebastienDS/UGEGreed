@@ -23,26 +23,52 @@ public class PacketReader implements Reader<Packet> {
   private final HeaderReader headerReader = new HeaderReader();
   private Header header;
   private Packet packet;
-  @SuppressWarnings("unchecked") // Safe cast, Trust the process
   private final List<Reader<? extends Payload>> readers = List.of(
-      /* 0 */ new GenericReader<>(List.of(stringReader, socketAddressReader), parts -> new Connection((String) parts.get(0), (SocketAddress) parts.get(1))),
-      /* 1 */ new GenericReader<>(List.of(listSocketAddressReader), parts -> new Validation((List<SocketAddress>) parts.get(0))),
-      /* 2 */ new GenericReader<>(List.of(), parts -> new RejectConnection()),
-      /* 3 */ new GenericReader<>(List.of(socketAddressReader), parts -> new NewServer((SocketAddress) parts.get(0))),
-      /* 4 */ new GenericReader<>(List.of(), parts -> new RequestState()),
-      /* 5 */ new GenericReader<>(List.of(intReader), parts -> new ResponseState((int) parts.get(0))),
-      /* 6 */ new GenericReader<>(
-          List.of(longReader, stringReader, stringReader, longReader, longReader),
-          parts -> new Task((long) parts.get(0), (String) parts.get(1), (String) parts.get(2), new Task.Range((long) parts.get(3), (long) parts.get(4)))
-      ),
-      /* 7 */ new GenericReader<>(List.of(longReader), parts -> new RejectTask((long) parts.get(0))),
+      /* 0 */ GenericReader.create(builder -> {
+        var authentication = builder.add(stringReader);
+        var address = builder.add(socketAddressReader);
+        return () -> new Connection(authentication.get(), address.get());
+      }),
+      /* 1 */ GenericReader.create(builder -> {
+        var addresses = builder.add(listSocketAddressReader);
+        return () -> new Validation(addresses.get());
+      }),
+      /* 2 */ GenericReader.create(builder -> RejectConnection::new),
+      /* 3 */ GenericReader.create(builder -> {
+        var address = builder.add(socketAddressReader);
+        return () -> new NewServer(address.get());
+      }),
+      /* 4 */ GenericReader.create(builder -> RequestState::new),
+      /* 5 */ GenericReader.create(builder -> {
+        var tasksInProgress = builder.add(intReader);
+        return () -> new ResponseState(tasksInProgress.get());
+      }),
+      /* 6 */ GenericReader.create(builder -> {
+        var id = builder.add(longReader);
+        var url = builder.add(stringReader);
+        var className = builder.add(stringReader);
+        var from = builder.add(longReader);
+        var to = builder.add(longReader);
+        return () -> new Task(id.get(), url.get(), className.get(), new Task.Range(from.get(), to.get()));
+      }),
+      /* 7 */ GenericReader.create(builder -> {
+        var id = builder.add(longReader);
+        return () -> new RejectTask(id.get());
+      }),
       /* 8 */ new ResponseTaskReader(),
-      /* 9 */ new GenericReader<>(List.of(longReader, byteReader, longReader), parts -> new AnnulationTask((long) parts.get(0), (byte) parts.get(1), (long) parts.get(2))),
-      /* 10 */ new GenericReader<>(List.of(), parts -> new Disconnection()),
-      /* 11 */ new GenericReader<>(
-          List.of(stringReader, socketAddressReader, listSocketAddressReader),
-          parts -> new Reconnection((String) parts.get(0), (SocketAddress) parts.get(1), (List<SocketAddress>) parts.get(2))
-      )
+      /* 9 */ GenericReader.create(builder -> {
+        var id = builder.add(longReader);
+        var status = builder.add(byteReader);
+        var startRemainingValues = builder.add(longReader);
+        return () -> new AnnulationTask(id.get(), status.get(), startRemainingValues.get());
+      }),
+      /* 10 */ GenericReader.create(builder -> Disconnection::new),
+      /* 11 */ GenericReader.create(builder -> {
+        var authentication = builder.add(stringReader);
+        var address = builder.add(socketAddressReader);
+        var addresses = builder.add(listSocketAddressReader);
+        return () -> new Reconnection(authentication.get(), address.get(), addresses.get());
+      })
   );
 
   @Override
